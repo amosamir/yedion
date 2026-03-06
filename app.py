@@ -723,6 +723,13 @@ with app.app_context():
     except Exception:
         pass
 
+@app.route("/fix")
+def fix():
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("INSERT INTO listener_state (id, issue_id, segment_position) VALUES (1, NULL, 0) ON CONFLICT (id) DO NOTHING")
+    conn.commit(); cur.close(); conn.close()
+    return "ok"
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
