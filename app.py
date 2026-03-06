@@ -237,8 +237,8 @@ def upload():
 @app.route("/api/current")
 def current():
     conn = get_db(); cur = conn.cursor()
-    state = cur.execute("SELECT * FROM listener_state WHERE id=1") or None
-    state = cur.fetchone()
+    cur.execute("SELECT * FROM listener_state WHERE id=1")
+    state = cur.fetchone()    
     if not state or not state["issue_id"]:
         cur.close(); conn.close()
         return jsonify({"no_issue": True})
