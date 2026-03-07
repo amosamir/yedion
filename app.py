@@ -716,7 +716,7 @@ function startListen(){
 
   var btn=document.getElementById('vcbtn');
   btn.classList.add('listening');
-  btn.textContent='\ud83d\udc42 \u05de\u05d0\u05d6\u05d9\u05df...';
+  btn.textContent='\u05de\u05d0\u05d6\u05d9\u05df...';
   vcMsg('',false);
 
   // audio + voice cue
@@ -754,7 +754,7 @@ function resetVcBtn(){
   var btn=document.getElementById('vcbtn');
   btn.classList.remove('listening');
   btn.classList.remove('ok');
-  btn.textContent='\ud83c\udfa4 \u05d3\u05d1\u05e8 \u05d0\u05dc\u05d9';
+  btn.textContent='\u05d3\u05d1\u05e8 \u05d0\u05dc\u05d9';
   rec=null;
 }
 
