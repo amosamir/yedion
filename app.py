@@ -67,7 +67,35 @@ SPECIAL_RE = re.compile(r"(שקלים|זכור|פרה|החודש|הגדול|שו
 NIKUD_RE = re.compile(r"[\u0591-\u05c7]")
 
 def strip_nikud(text: str) -> str:
-    return NIKUD_RE.sub("", text)
+    text = NIKUD_RE.sub("", text)
+    # PDF with nikud extracts each letter separately with spaces.
+    # Join consecutive runs of single Hebrew-letter tokens.
+    HE1 = re.compile(r"^[\u05d0-\u05ea\u05f0-\u05f4]$")
+    result_lines = []
+    for line in text.split("\n"):
+        tokens = line.split(" ")
+        merged = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if HE1.match(tok):
+                # Start of a run — collect consecutive single-letter tokens
+                run = [tok]
+                j = i + 1
+                while j < len(tokens) and HE1.match(tokens[j]):
+                    run.append(tokens[j])
+                    j += 1
+                # Only join if run is longer than 1 (real isolated letters)
+                if len(run) > 1:
+                    merged.append("".join(run))
+                else:
+                    merged.append(tok)
+                i = j
+            else:
+                merged.append(tok)
+                i += 1
+        result_lines.append(" ".join(merged))
+    return "\n".join(result_lines)
 
 def fix_rtl_line(line: str) -> str:
     """Reverse line for RTL fix, but also fix digit sequences that got reversed."""
