@@ -476,7 +476,7 @@ function speak(){
   if(!S)return;
   synth.cancel();
   const seg=S.segments[S.current_position];
-  utt=new SpeechSynthesisUtterance(seg.title+'.\n\n'+seg.body);
+  utt=new SpeechSynthesisUtterance(seg.title+'. '+seg.body);
   utt.lang='he-IL'; utt.rate=rate;
   if(heVoice)utt.voice=heVoice;
   utt.onstart=()=>{playing=true;document.getElementById('pb').textContent='⏸';
