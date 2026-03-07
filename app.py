@@ -445,7 +445,7 @@ initV();
 async function load(){
   const r=await fetch('/api/current');
   const d=await r.json();
-  if(d.no_issue){document.getElementById('lmsg').textContent='אין ידיעון זמין 😊';return;}
+  if(d.no_issue){document.getElementById('lmsg').textContent='\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05de\u05d9\u05df';return;}
   S=d;
   document.getElementById('ls').setAttribute('style','display:none !important');
   render(); renderD();
