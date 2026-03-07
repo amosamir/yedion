@@ -27,6 +27,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS issues (
             id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
+            description TEXT DEFAULT '',
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS segments (
@@ -45,6 +46,12 @@ def init_db():
         VALUES (1, NULL, 0)
         ON CONFLICT (id) DO NOTHING;
     """)
+    # Add description column if missing (for existing DBs)
+    try:
+        cur.execute("ALTER TABLE issues ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        conn.rollback()
     conn.commit()
     cur.close()
     conn.close()
@@ -286,6 +293,54 @@ def set_issue():
     conn = get_db(); cur = conn.cursor()
     cur.execute("UPDATE listener_state SET issue_id=%s, segment_position=0 WHERE id=1",
                 (data["issue_id"],))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/update_issue", methods=["POST"])
+def update_issue():
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE issues SET description=%s WHERE id=%s",
+                (data.get("description", ""), data["issue_id"]))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/delete_issue", methods=["POST"])
+def delete_issue():
+    data = request.json
+    issue_id = data["issue_id"]
+    conn = get_db(); cur = conn.cursor()
+    # If active issue, clear state
+    cur.execute("SELECT issue_id FROM listener_state WHERE id=1")
+    state = cur.fetchone()
+    if state and state["issue_id"] == issue_id:
+        cur.execute("UPDATE listener_state SET issue_id=NULL, segment_position=0 WHERE id=1")
+    cur.execute("DELETE FROM issues WHERE id=%s", (issue_id,))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/segments/<int:issue_id>")
+def get_segments(issue_id):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT * FROM segments WHERE issue_id=%s ORDER BY position", (issue_id,))
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/delete_segment", methods=["POST"])
+def delete_segment():
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM segments WHERE id=%s", (data["segment_id"],))
+    # Re-number positions
+    cur.execute("""
+        WITH ranked AS (
+            SELECT id, ROW_NUMBER() OVER (ORDER BY position) - 1 as new_pos
+            FROM segments WHERE issue_id=%s
+        )
+        UPDATE segments SET position=ranked.new_pos
+        FROM ranked WHERE segments.id=ranked.id
+    """, (data["issue_id"],))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
@@ -830,33 +885,34 @@ ADMIN_HTML = """<!DOCTYPE html>
 @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;700;900&display=swap');
 :root{
   --bg:#f5f2ec;--surface:#fff;--border:#ddd8ce;
-  --green:#2d5f3f;--green-light:#edf5f0;
+  --green:#2d5f3f;--green-light:#edf5f0;--green-border:#c5deca;
+  --red:#c0392b;--red-light:#fef0f0;
   --text:#1a1a18;--muted:#888;--r:16px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'Heebo',sans-serif;min-height:100vh}
-.wrap{max-width:700px;margin:0 auto;padding:40px 24px}
+.wrap{max-width:760px;margin:0 auto;padding:40px 24px}
 h1{font-size:32px;font-weight:900;margin-bottom:3px}
 .sub{color:var(--muted);font-size:14px;margin-bottom:36px}
 .card{background:var(--surface);border:1px solid var(--border);
   border-radius:var(--r);padding:28px;margin-bottom:20px}
-.card h2{font-size:17px;font-weight:700;margin-bottom:16px}
+.card h2{font-size:17px;font-weight:700;margin-bottom:16px;
+  display:flex;align-items:center;justify-content:space-between}
 
 /* listener link */
 .llink{display:flex;align-items:center;gap:10px;background:var(--green-light);
-  border:1px solid #c5deca;border-radius:10px;padding:14px 16px;
-  text-decoration:none;color:var(--green);font-weight:700;font-size:15px;
-  transition:opacity .2s}
+  border:1px solid var(--green-border);border-radius:10px;padding:14px 16px;
+  text-decoration:none;color:var(--green);font-weight:700;font-size:15px;transition:opacity .2s}
 .llink:hover{opacity:.85}
 .llink .ic{font-size:22px}
 
-/* drop zone */
+/* upload zone */
 #dz{border:2px dashed var(--border);border-radius:12px;padding:48px 20px;
   text-align:center;cursor:pointer;transition:all .2s;background:var(--bg)}
 #dz:hover,#dz.over{border-color:var(--green);background:var(--green-light)}
 #dz .ic{font-size:38px;margin-bottom:10px}
 #dz .ht{font-size:16px;font-weight:700;margin-bottom:4px}
-#dz .sb{font-size:13px;color:var(--muted)}
+#dz .sb2{font-size:13px;color:var(--muted)}
 #fi{display:none}
 #fn{margin-top:10px;font-size:13px;color:var(--muted);display:none}
 .ubtn{width:100%;margin-top:14px;padding:16px;background:var(--green);color:#fff;
@@ -864,45 +920,81 @@ h1{font-size:32px;font-weight:900;margin-bottom:3px}
   font-family:'Heebo',sans-serif;cursor:pointer;transition:opacity .2s;display:none}
 .ubtn:hover{opacity:.9}
 .ubtn.vis{display:block}
-
-/* progress */
 #prog{height:4px;background:var(--border);border-radius:99px;overflow:hidden;
   margin-top:12px;display:none}
-#pfill{height:100%;background:var(--green);border-radius:99px;
-  width:0;transition:width .4s}
-
-/* status */
+#pfill{height:100%;background:var(--green);border-radius:99px;width:0;transition:width .4s}
 #st{margin-top:14px;padding:13px 15px;border-radius:10px;font-size:14px;
   font-weight:700;display:none}
 #st.ok{background:var(--green-light);color:var(--green)}
-#st.err{background:#fef0f0;color:#c0392b}
+#st.err{background:var(--red-light);color:var(--red)}
 #st.wait{background:#f0f0f0;color:var(--muted)}
-
-/* segment preview */
 #preview{margin-top:14px;display:none}
 #preview h3{font-size:13px;color:var(--muted);margin-bottom:8px}
 #preview-list{display:flex;flex-wrap:wrap;gap:6px}
 .ptag{background:var(--green-light);color:var(--green);border-radius:99px;
   padding:4px 12px;font-size:13px;font-weight:700}
 
-/* issues */
-.row{display:flex;align-items:center;padding:13px 0;
-  border-bottom:1px solid var(--border);gap:11px}
-.row:last-child{border-bottom:none}
-.ri{flex:1}
-.rt{font-weight:700;font-size:15px}
-.rm{font-size:12px;color:var(--muted);margin-top:2px}
-.abtn{padding:8px 14px;background:var(--green);color:#fff;border:none;
-  border-radius:8px;font-family:'Heebo',sans-serif;font-weight:700;
-  font-size:13px;cursor:pointer;opacity:.5;transition:opacity .2s}
-.abtn.cur{opacity:1;background:#888;cursor:default}
-.abtn:not(.cur):hover{opacity:1}
+/* issues list */
+.issue-row{border:1px solid var(--border);border-radius:12px;
+  margin-bottom:12px;overflow:hidden}
+.issue-head{display:flex;align-items:center;gap:12px;padding:16px 18px;
+  cursor:pointer;background:var(--surface);transition:background .15s;user-select:none}
+.issue-head:hover{background:#faf8f4}
+.issue-head.cur{background:var(--green-light)}
+.ih-info{flex:1}
+.ih-title{font-weight:700;font-size:15px}
+.ih-meta{font-size:12px;color:var(--muted);margin-top:2px}
+.ih-badge{background:var(--green);color:#fff;font-size:11px;font-weight:700;
+  padding:3px 9px;border-radius:99px}
+.ih-chevron{font-size:14px;color:var(--muted);transition:transform .2s}
+.ih-chevron.open{transform:rotate(180deg)}
+
+/* issue detail panel */
+.issue-detail{display:none;border-top:1px solid var(--border);padding:18px;
+  background:#fdfcfa}
+.issue-detail.open{display:block}
+
+/* description field */
+.desc-row{display:flex;gap:10px;margin-bottom:14px;align-items:flex-start}
+.desc-row textarea{flex:1;border:1px solid var(--border);border-radius:10px;
+  padding:10px 12px;font-family:'Heebo',sans-serif;font-size:14px;
+  resize:none;height:56px;color:var(--text);background:var(--surface)}
+.desc-row textarea:focus{outline:none;border-color:var(--green)}
+.save-btn{padding:10px 18px;background:var(--green);color:#fff;border:none;
+  border-radius:10px;font-family:'Heebo',sans-serif;font-weight:700;
+  font-size:14px;cursor:pointer;white-space:nowrap;transition:opacity .2s}
+.save-btn:hover{opacity:.9}
+
+/* segments */
+.seg-list{margin-top:4px}
+.seg-row{display:flex;align-items:center;gap:10px;padding:10px 0;
+  border-bottom:1px solid var(--border)}
+.seg-row:last-child{border-bottom:none}
+.seg-num{font-size:12px;color:var(--muted);min-width:24px;text-align:center}
+.seg-title{flex:1;font-size:14px;font-weight:700}
+.seg-words{font-size:12px;color:var(--muted)}
+.del-btn{padding:5px 12px;background:transparent;border:1px solid #e0c0c0;
+  border-radius:8px;color:var(--red);font-family:'Heebo',sans-serif;
+  font-size:12px;font-weight:700;cursor:pointer;transition:all .2s}
+.del-btn:hover{background:var(--red-light)}
+
+/* action buttons */
+.act-row{display:flex;gap:10px;margin-top:16px;padding-top:14px;
+  border-top:1px solid var(--border)}
+.act-btn{padding:9px 18px;border:none;border-radius:10px;
+  font-family:'Heebo',sans-serif;font-weight:700;font-size:14px;
+  cursor:pointer;transition:opacity .2s}
+.act-btn:hover{opacity:.85}
+.act-activate{background:var(--green);color:#fff;flex:1}
+.act-activate.cur{background:#888;cursor:default}
+.act-delete{background:var(--red-light);color:var(--red);
+  border:1px solid #e0c0c0}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>📰 ניהול ידיעון</h1>
-  <p class="sub">בארות יצחק — הצד שלך</p>
+  <h1>ניהול ידיעון</h1>
+  <p class="sub">בארות יצחק</p>
 
   <div class="card">
     <a href="/" class="llink" target="_blank">
@@ -918,87 +1010,168 @@ h1{font-size:32px;font-weight:900;margin-bottom:3px}
          ondrop="drop(event)">
       <div class="ic">📄</div>
       <div class="ht">גרור לכאן קובץ PDF של הידיעון</div>
-      <div class="sb">או לחץ לבחירה</div>
+      <div class="sb2">או לחץ לבחירה</div>
     </div>
     <input type="file" id="fi" accept=".pdf" onchange="pick(this.files[0])">
     <div id="fn"></div>
-    <button class="ubtn" id="ub" onclick="upload()">⬆ העלה ועבד</button>
+    <button class="ubtn" id="ub" onclick="doUpload()">העלה ועבד</button>
     <div id="prog"><div id="pfill"></div></div>
     <div id="st"></div>
-    <div id="preview">
-      <h3>קטעים שזוהו:</h3>
-      <div id="preview-list"></div>
-    </div>
+    <div id="preview"><h3>קטעים שזוהו:</h3><div id="preview-list"></div></div>
   </div>
 
   <div class="card">
-    <h2>ידיעונים שמורים</h2>
+    <h2>ידיעונים שמורים <span id="count-badge" style="font-size:13px;color:var(--muted);font-weight:400"></span></h2>
     <div id="ilist"><div style="color:var(--muted);font-size:14px">טוען...</div></div>
   </div>
 </div>
 
 <script>
-let file=null;
+var file=null, expandedId=null;
+
 function drop(e){
   e.preventDefault();
   document.getElementById('dz').classList.remove('over');
-  const f=e.dataTransfer.files[0];
+  var f=e.dataTransfer.files[0];
   if(f&&f.name.endsWith('.pdf'))pick(f);
 }
 function pick(f){
   if(!f)return; file=f;
-  const fn=document.getElementById('fn');
+  var fn=document.getElementById('fn');
   fn.style.display='block'; fn.textContent='📎 '+f.name;
   document.getElementById('ub').classList.add('vis');
   document.getElementById('preview').style.display='none';
   document.getElementById('st').style.display='none';
 }
-async function upload(){
+async function doUpload(){
   if(!file)return;
-  const ub=document.getElementById('ub'),st=document.getElementById('st');
-  const prog=document.getElementById('prog'),fill=document.getElementById('pfill');
-  ub.disabled=true; ub.textContent='⏳ מעבד...';
+  var ub=document.getElementById('ub'),st=document.getElementById('st');
+  var prog=document.getElementById('prog'),fill=document.getElementById('pfill');
+  ub.disabled=true; ub.textContent='מעבד...';
   st.className='wait'; st.style.display='block'; st.textContent='מחלץ טקסט ומחלק לקטעים...';
   prog.style.display='block'; fill.style.width='30%';
-  const fd=new FormData(); fd.append('pdf',file);
+  var fd=new FormData(); fd.append('pdf',file);
   try{
     fill.style.width='65%';
-    const r=await fetch('/api/upload',{method:'POST',body:fd});
-    const d=await r.json();
+    var r=await fetch('/api/upload',{method:'POST',body:fd});
+    var d=await r.json();
     fill.style.width='100%';
     if(d.ok){
       st.className='ok';
-      st.textContent='\u2705 "'+d.title+'" \u2014 '+d.segments+' \u05e7\u05d8\u05e2\u05d9\u05dd';
+      st.textContent='הידיעון הועלה: '+d.title+' ('+d.segments+' קטעים)';
       if(d.preview){
         document.getElementById('preview').style.display='block';
         document.getElementById('preview-list').innerHTML=
-          d.preview.map((t,i)=>'<span class="ptag">'+(i+1)+'. '+t+'</span>').join('');
+          d.preview.map(function(t,i){return '<span class="ptag">'+(i+1)+'. '+t+'</span>';}).join('');
       }
       loadIssues();
     }else{
-      st.className='err'; st.textContent='❌ '+d.error;
+      st.className='err'; st.textContent='שגיאה: '+d.error;
     }
-  }catch(e){st.className='err';st.textContent='❌ שגיאת חיבור';}
-  ub.disabled=false; ub.textContent='⬆ העלה ועבד';
+  }catch(e){st.className='err';st.textContent='שגיאת חיבור';}
+  ub.disabled=false; ub.textContent='העלה ועבד';
 }
+
 async function loadIssues(){
-  const[ir,cr]=await Promise.all([fetch('/api/issues'),fetch('/api/current')]);
-  const issues=await ir.json(), cur=await cr.json();
-  const curId=cur.issue_id||null;
-  const list=document.getElementById('ilist');
-  if(!issues.length){list.innerHTML='<div style="color:var(--muted);font-size:14px">אין ידיעונים עדיין</div>';return;}
-  list.innerHTML=issues.map(i=>{
-    const d=new Date(i.created_at).toLocaleDateString('he-IL');
-    const isCur=i.id===curId;
-    return '<div class="row"><div class="ri"><div class="rt">'+i.title+'</div><div class="rm">'+d+' \u00b7 '+i.seg_count+' \u05e7\u05d8\u05e2\u05d9\u05dd'+(isCur?' \u00b7 <strong>\u05e4\u05e2\u05d9\u05dc</strong>':'')+
-      '</div></div><button class="abtn '+(isCur?'cur':'')+'" onclick="'+(isCur?'':('activate('+i.id+')'))+'">'+(isCur?'\u2713 \u05e4\u05e2\u05d9\u05dc':'\u05d4\u05e4\u05e2\u05dc')+'</button></div>';
+  var ir=await fetch('/api/issues');
+  var cr=await fetch('/api/current');
+  var issues=await ir.json(), cur=await cr.json();
+  var curId=cur.issue_id||null;
+  var list=document.getElementById('ilist');
+  document.getElementById('count-badge').textContent=issues.length ? '('+issues.length+')' : '';
+  if(!issues.length){
+    list.innerHTML='<div style="color:var(--muted);font-size:14px">אין ידיעונים עדיין</div>';
+    return;
+  }
+  list.innerHTML=issues.map(function(iss){
+    var isCur=iss.id===curId;
+    var d=new Date(iss.created_at).toLocaleDateString('he-IL');
+    return '<div class="issue-row" id="ir-'+iss.id+'">'+
+      '<div class="issue-head'+(isCur?' cur':'')+'" onclick="toggleDetail('+iss.id+','+isCur+')">'+
+        (isCur?'<span class="ih-badge">פעיל</span>':'')+
+        '<div class="ih-info">'+
+          '<div class="ih-title">'+iss.title+'</div>'+
+          '<div class="ih-meta">'+(iss.description||'ללא תיאור')+' &nbsp;·&nbsp; '+d+' &nbsp;·&nbsp; '+iss.seg_count+' קטעים</div>'+
+        '</div>'+
+        '<span class="ih-chevron" id="chev-'+iss.id+'">▾</span>'+
+      '</div>'+
+      '<div class="issue-detail" id="det-'+iss.id+'">'+
+        '<div class="desc-row">'+
+          '<textarea id="desc-'+iss.id+'" placeholder="תיאור: פרשה, גיליון...">'+(iss.description||'')+'</textarea>'+
+          '<button class="save-btn" onclick="saveDesc('+iss.id+')">שמור</button>'+
+        '</div>'+
+        '<div class="seg-list" id="segs-'+iss.id+'"><div style="color:var(--muted);font-size:13px">טוען קטעים...</div></div>'+
+        '<div class="act-row">'+
+          '<button class="act-btn act-activate'+(isCur?' cur':'')+'" onclick="'+(isCur?'':('activate('+iss.id+')'))+'">'+(isCur?'✓ פעיל כעת':'הפעל ידיעון זה')+'</button>'+
+          '<button class="act-btn act-delete" onclick="deleteIssue('+iss.id+')">מחק ידיעון</button>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
   }).join('');
 }
+
+async function toggleDetail(id, isCur){
+  var det=document.getElementById('det-'+id);
+  var chev=document.getElementById('chev-'+id);
+  var isOpen=det.classList.contains('open');
+  // close all
+  document.querySelectorAll('.issue-detail').forEach(function(el){el.classList.remove('open');});
+  document.querySelectorAll('.ih-chevron').forEach(function(el){el.classList.remove('open');});
+  if(!isOpen){
+    det.classList.add('open');
+    chev.classList.add('open');
+    expandedId=id;
+    loadSegments(id);
+  } else {
+    expandedId=null;
+  }
+}
+
+async function loadSegments(issueId){
+  var el=document.getElementById('segs-'+issueId);
+  var r=await fetch('/api/segments/'+issueId);
+  var segs=await r.json();
+  if(!segs.length){el.innerHTML='<div style="color:var(--muted);font-size:13px">אין קטעים</div>';return;}
+  el.innerHTML=segs.map(function(s){
+    var words=s.body.split(' ').length;
+    return '<div class="seg-row" id="sr-'+s.id+'">'+
+      '<span class="seg-num">'+(s.position+1)+'</span>'+
+      '<span class="seg-title">'+s.title+'</span>'+
+      '<span class="seg-words">'+words+' מילים</span>'+
+      '<button class="del-btn" onclick="deleteSeg('+s.id+','+issueId+')">מחק</button>'+
+    '</div>';
+  }).join('');
+}
+
+async function saveDesc(issueId){
+  var desc=document.getElementById('desc-'+issueId).value;
+  await fetch('/api/update_issue',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({issue_id:issueId,description:desc})});
+  loadIssues();
+}
+
 async function activate(id){
   await fetch('/api/set_issue',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({issue_id:id})});
   loadIssues();
 }
+
+async function deleteIssue(id){
+  if(!confirm('למחוק את הידיעון וכל קטעיו?'))return;
+  await fetch('/api/delete_issue',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({issue_id:id})});
+  loadIssues();
+}
+
+async function deleteSeg(segId, issueId){
+  if(!confirm('למחוק קטע זה?'))return;
+  await fetch('/api/delete_segment',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({segment_id:segId,issue_id:issueId})});
+  loadSegments(issueId);
+}
+
 loadIssues();
 </script>
 </body>
