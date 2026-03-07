@@ -446,7 +446,8 @@ async function load(){
   const r=await fetch('/api/current');
   const d=await r.json();
   if(d.no_issue){document.getElementById('lmsg').textContent='אין ידיעון זמין 😊';return;}
-  S=d; document.getElementById('ls').style.display = 'none';
+  S=d;
+  document.getElementById('ls').setAttribute('style','display:none !important');
   render(); renderD();
 }
 function render(){
