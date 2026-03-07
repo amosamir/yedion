@@ -476,7 +476,6 @@ function renderD(){
   if(!S)return;
   document.getElementById('segl').innerHTML=S.segments.map((s,i)=>'<div class="si '+(i===S.current_position?'cur':'')+'" onclick="jump('+i+')"><div class="n">'+(i+1)+'</div><div class="dot"></div><div class="nm">'+s.title+'</div></div>').join('');
 }
-function jump(p){stop();S.current_position=p;savePos(p);render();closeD();}
 function nav(d){
   stop();
   const n=S.current_position+d;
@@ -488,7 +487,7 @@ function speak(){
   if(!S)return;
   synth.cancel();
   const seg=S.segments[S.current_position];
-  utt=new SpeechSynthesisUtterance(seg.title+'.\n\n'+seg.body);
+  utt=new SpeechSynthesisUtterance(seg.title+'. '+seg.body);
   utt.lang='he-IL'; utt.rate=rate;
   if(heVoice)utt.voice=heVoice;
   utt.onstart=()=>{playing=true;document.getElementById('pb').textContent='⏸';
