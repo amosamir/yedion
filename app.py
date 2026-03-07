@@ -1143,7 +1143,7 @@ async function loadIssues(){
       '</div>'+
       '<div class="issue-detail" id="det-'+iss.id+'">'+
         '<div class="edit-row"><span class="edit-label">שם:</span>'+
-          '<input id="ititle-'+iss.id+'" value="'+iss.title.replace(/"/g,'&quot;')+'" onkeydown="if(event.keyCode==13)saveTitle('+iss.id+')">'+
+          '<input id="ititle-'+iss.id+'" value="'+iss.title.split('"').join('&quot;')+'" onkeydown="if(event.keyCode==13)saveTitle('+iss.id+')">'+
           '<button class="save-btn" onclick="saveTitle('+iss.id+')">שמור</button>'+
           '<span class="saved-flash" id="sf-t-'+iss.id+'">נשמר</span>'+
         '</div>'+
@@ -1181,9 +1181,9 @@ async function loadSegments(issueId){
     var words=s.body.split(' ').length;
     return '<div class="seg-row" id="sr-'+s.id+'">'+
       '<span class="seg-num">'+(s.position+1)+'</span>'+
-      '<input class="seg-name-input" id="sn-'+s.id+'" value="'+s.title.replace(/"/g,'&quot;')+
+      '<input class="seg-name-input" id="sn-'+s.id+'" value="'+s.title.split('"').join('&quot;')+
         '" onblur="renameSeg('+s.id+','+issueId+')" onkeydown="if(event.keyCode==13)this.blur()">'+
-      '<span class="seg-words">'+words+' מ\'</span>'+
+      '<span class="seg-words">'+words+' \u05de</span>'+
       '<button class="del-seg-btn" onclick="deleteSeg('+s.id+','+issueId+')">מחק</button>'+
     '</div>';
   }).join('');
