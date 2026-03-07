@@ -394,6 +394,16 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 .si.cur .nm{color:var(--accent)}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);flex-shrink:0;opacity:0}
 .si.cur .dot{opacity:1}
+
+/* voice */
+#vcbtn{width:100%;padding:18px;background:var(--surface2);border:2px solid var(--border);
+  border-radius:var(--r);color:var(--text);font-family:'Heebo',sans-serif;
+  font-size:20px;font-weight:700;cursor:pointer;transition:all .2s;flex-shrink:0}
+#vcbtn.listening{background:#3a1a1a;border-color:#e87a7a;color:#e87a7a;
+  animation:pulse 1s ease-in-out infinite}
+#vcbtn.ok{border-color:var(--accent);color:var(--accent)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+#vcmsg{text-align:center;font-size:13px;color:var(--muted);min-height:18px;flex-shrink:0}
 </style>
 </head>
 <body>
@@ -424,6 +434,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);
     <button class="sb" onclick="spd(1.2)">×1.2</button>
     <button class="sb" onclick="spd(1.5)">×1.5</button>
   </div>
+  <button id="vcbtn" onclick="startListen()">🎙 דבר אלי</button>
+  <div id="vcmsg"></div>
 </div>
 
 <div id="ov" onclick="closeD()"></div>
@@ -476,7 +488,7 @@ function speak(){
   if(!S)return;
   synth.cancel();
   const seg=S.segments[S.current_position];
-  utt=new SpeechSynthesisUtterance(seg.title+'. '+seg.body);
+  utt=new SpeechSynthesisUtterance(seg.title+'.\n\n'+seg.body);
   utt.lang='he-IL'; utt.rate=rate;
   if(heVoice)utt.voice=heVoice;
   utt.onstart=()=>{playing=true;document.getElementById('pb').textContent='⏸';
@@ -513,6 +525,82 @@ function openD(){document.getElementById('drw').classList.add('o');
   document.getElementById('ov').classList.add('o');}
 function closeD(){document.getElementById('drw').classList.remove('o');
   document.getElementById('ov').classList.remove('o');}
+
+// ── Voice control ──────────────────────────────────────────────
+const SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition;
+let rec=null;
+function vcMsg(txt,ok){
+  const el=document.getElementById('vcmsg');
+  el.textContent=txt;
+  el.style.color=ok?'var(--accent)':'var(--muted)';
+}
+function startListen(){
+  if(!SpeechRec){vcMsg('זיהוי קולי לא נתמך בדפדפן זה',false);return;}
+  if(rec){rec.abort();rec=null;}
+  rec=new SpeechRec();
+  rec.lang='he-IL';
+  rec.interimResults=false;
+  rec.maxAlternatives=5;
+  const btn=document.getElementById('vcbtn');
+  btn.classList.add('listening');
+  btn.textContent='👂 מאזין...';
+  vcMsg('דבר עכשיו',false);
+  rec.onresult=(e)=>{
+    const alts=Array.from(e.results[0]).map(a=>a.transcript.trim());
+    console.log('heard:',alts);
+    const heard=alts.join(' ');
+    handleCmd(heard);
+  };
+  rec.onerror=(e)=>{
+    vcMsg('לא הצלחתי לשמוע — נסה שוב',false);
+    resetVcBtn();
+  };
+  rec.onend=resetVcBtn;
+  rec.start();
+}
+function resetVcBtn(){
+  const btn=document.getElementById('vcbtn');
+  btn.classList.remove('listening');
+  btn.classList.remove('ok');
+  btn.textContent='🎙 דבר אלי';
+  rec=null;
+}
+function handleCmd(heard){
+  const btn=document.getElementById('vcbtn');
+  btn.classList.remove('listening');
+  // normalize
+  const h=heard.replace(/[.,!?]/g,'');
+  let done=false;
+  // play
+  if(/הפעל|התחל|המשך|קרא/.test(h)){speak();done=true;}
+  // pause/stop
+  else if(/עצור|השהה|פסק|הפסק/.test(h)){pause();done=true;}
+  // next
+  else if(/הבא|קטע הבא|קדימה/.test(h)){nav(1);done=true;}
+  // prev
+  else if(/קודם|קטע קודם|אחורה/.test(h)){nav(-1);done=true;}
+  // beginning of issue
+  else if(/התחלה|חזור|ראשון|גיליון/.test(h)){
+    stop();S.current_position=0;savePos(0);render();done=true;}
+  // speed
+  else if(/מהיר יותר|מהר יותר/.test(h)){
+    const speeds=[0.8,1,1.2,1.5];
+    const i=speeds.indexOf(rate);
+    if(i<speeds.length-1)spd(speeds[i+1]);done=true;}
+  else if(/איטי יותר|לאט יותר/.test(h)){
+    const speeds=[0.8,1,1.2,1.5];
+    const i=speeds.indexOf(rate);
+    if(i>0)spd(speeds[i-1]);done=true;}
+
+  if(done){
+    btn.classList.add('ok');
+    vcMsg('בוצע: '+heard,true);
+    setTimeout(()=>{btn.classList.remove('ok');vcMsg('',false);},2000);
+  } else {
+    vcMsg('לא הבנתי: "'+heard+'"',false);
+    setTimeout(()=>vcMsg('',false),3000);
+  }
+}
 
 load();
 </script>
