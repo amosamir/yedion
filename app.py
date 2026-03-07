@@ -354,10 +354,13 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 #app.vis{display:flex}
 
 /* back to blind button */
-#back-blind{display:flex;align-items:center;gap:8px;padding:10px 0 4px;
-  background:transparent;border:none;color:var(--accent);
-  font-family:'Heebo',sans-serif;font-size:15px;font-weight:700;
-  cursor:pointer;flex-shrink:0}
+#back-blind{width:100%;padding:16px 20px;
+  background:var(--accent);color:#111;
+  border:none;border-radius:var(--r);
+  font-family:'Heebo',sans-serif;font-size:18px;font-weight:900;
+  cursor:pointer;flex-shrink:0;text-align:center;
+  transition:opacity .2s;-webkit-user-select:none;user-select:none}
+#back-blind:active{opacity:.85}
 
 #hdr{display:flex;flex-direction:column;gap:3px}
 #issue-lbl{font-size:11px;color:var(--accent);font-weight:700;
@@ -595,12 +598,12 @@ function speakAndroid(text){
   // Android cuts off long utterances — split into sentences
   var sentences=text.match(/[^.!?]+[.!?]+/g)||[text];
   var idx=0;
+  onSpeakStart(); // call immediately, don't wait for onstart event
   function next(){
     if(idx>=sentences.length){onSpeakEnd();return;}
     utt=new SpeechSynthesisUtterance(sentences[idx++]);
     utt.lang='he-IL'; utt.rate=rate;
     if(heVoice)utt.voice=heVoice;
-    if(idx===1)utt.onstart=onSpeakStart;
     utt.onend=next;
     utt.onerror=setIdle;
     synth.speak(utt);
