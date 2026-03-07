@@ -27,7 +27,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS issues (
             id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
-            description TEXT DEFAULT '',
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS segments (
@@ -46,155 +45,215 @@ def init_db():
         VALUES (1, NULL, 0)
         ON CONFLICT (id) DO NOTHING;
     """)
-    # Add description column if missing (for existing DBs)
-    try:
-        cur.execute("ALTER TABLE issues ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''")
-        conn.commit()
-    except Exception:
-        conn.rollback()
     conn.commit()
     cur.close()
     conn.close()
 
 # ─── PDF PROCESSING ──────────────────────────────────────────────────────────
 
-SECTIONS = [
-    (r"בחזרה לתפילות רחוב",       "בחזרה לתפילות רחוב"),
-    (r"דרשת שבת",                  "דרשת שבת"),
-    (r"משולחן המזכיר",             "משולחן המזכיר"),
-    (r"תפילת יחיד",                "תפילת יחיד"),
-    (r"כמו רקפות",                 "כמו רקפות"),
-    (r"טיל פגש|מתכנית רעות",       "מתכנית רעות"),
-    (r"בין שגרת חירום",            "מצוות חרום יישובי"),
-    (r"(?m)^מהמועצה\s*$",          "מהמועצה ובית הכנסת"),
-    (r"הודעה לחברים על מינוי",    "מהמזכירות"),
-    (r"התנועה ואנחנו",             "הקיבוץ הדתי"),
-    (r"(?m)^כלבודף\s*$",           "כלבודף"),
-    (r"הרכבת כבר עברה",            "הרכבת כבר עברה"),
-    (r"ממגילת היסוד",              "ממגילת היסוד"),
-    (r"שווה\s*קריאה",              "שווה קריאה"),
-    (r"מהמרפאה",                   "מהמרפאה"),
-    (r"מעשר כספים מכספי",          "מעשר כספים"),
-]
-
-# These three always get their own segment, always at the end in this order
 TAIL_ORDER = ["הקיבוץ הדתי", "לוח זמנים", "כלבודף"]
 
 PARASHA_RE = re.compile(
     r"(בראשית|נח|לך לך|וירא|חיי שרה|תולדות|ויצא|וישלח|וישב|מקץ|ויגש|ויחי|"
     r"שמות|וארא|בא|בשלח|יתרו|משפטים|תרומה|תצוה|כי תשא|ויקהל|פקודי|"
-    r"ויקרא|צו|שמיני|תזריע|מצורע|אחרי|קדושים|אמור|בהר|בחוקותי|"
+    r"ויקרא|צו|שמיני|תזריע|מצורע|אחרי מות|אחרי|קדושים|אמור|בהר|בחוקותי|"
     r"במדבר|נשא|בהעלותך|שלח|קרח|חוקת|בלק|פינחס|מטות|מסעי|"
     r"דברים|ואתחנן|עקב|ראה|שופטים|כי תצא|כי תבוא|נצבים|וילך|האזינו|וזאת הברכה)"
 )
 
+# Nikud unicode range
+NIKUD_RE = re.compile(r"[\u05b0-\u05c7]")
+
+def strip_nikud(text: str) -> str:
+    return NIKUD_RE.sub("", text)
+
+def fix_rtl_line(line: str) -> str:
+    """Reverse line for RTL fix, but also fix digit sequences that got reversed."""
+    reversed_line = line[::-1]
+    # Fix numbers: sequences of digits that were reversed need to be re-reversed
+    def fix_num(m):
+        return m.group(0)[::-1]
+    return re.sub(r"\d+", fix_num, reversed_line)
 
 def extract_text_from_pdf(path: str) -> str:
     pages = []
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             raw = page.extract_text() or ""
-            # Fix RTL: reverse each line
             lines = raw.split("\n")
-            pages.append("\n".join(line[::-1] for line in lines))
+            pages.append("\n".join(fix_rtl_line(l) for l in lines))
     full = "\n\n".join(pages)
-    full = re.sub(r"\n\d{1,2}\n", "\n", full)          # strip page numbers
-    full = re.sub(r"[■●•◆▪]", "", full)                # strip bullets
+    full = re.sub(r"\n\d{1,3}\n", "\n", full)   # strip page numbers
+    full = re.sub(r"[■●•◆▪]", "", full)          # strip bullets
     full = re.sub(r"\n{3,}", "\n\n", full)
+    full = strip_nikud(full)
     return full.strip()
 
 
 def detect_title(text: str) -> str:
-    head = text[:600]
-    # Try parasha name
+    head = strip_nikud(text[:800])
+    # Find issue number — search whole head, numbers are now correct
+    m3 = re.search(r"גיליון\s+(\d+)", head)
+    issue_num = m3.group(1) if m3 else None
+    # Find parasha
     m = PARASHA_RE.search(head)
     if m:
-        title = m.group(0)
-        # Check for combined (e.g. כי תשא–פרה)
-        rest = head[m.end():]
-        m2 = re.search(r"[–\-]\s*(" + PARASHA_RE.pattern + r")", rest[:50])
+        parasha = m.group(0)
+        # Check for combined parasha (e.g. נצבים-וילך)
+        rest = head[m.end():m.end()+60]
+        m2 = re.search(r"[-–]\s*(" + PARASHA_RE.pattern + r")", rest)
         if m2:
-            title += "–" + m2.group(1)
-        m3 = re.search(r"גיליון\s+(\d+)", head)
-        if m3:
-            return f"ידיעון {title} גיליון {m3.group(1)}"
-        return f"ידיעון {title}"
-    m3 = re.search(r"גיליון\s+(\d+)", head)
-    if m3:
-        return f"גיליון {m3.group(1)}"
-    return f"ידיעון {datetime.now().strftime('%d.%m.%Y')}"
+            parasha += "-" + m2.group(1)
+        if issue_num:
+            return "ידיעון " + parasha + " גיליון " + issue_num
+        return "ידיעון " + parasha
+    if issue_num:
+        return "גיליון " + issue_num
+    return "ידיעון " + datetime.now().strftime("%d.%m.%Y")
+
+
+# ── Article boundary detection ────────────────────────────────────────────────
+# A new article starts when we see a short line (likely a heading) that is
+# followed by body text. We detect headings as: line <= 40 chars, not purely
+# punctuation/numbers, standing alone (preceded and followed by blank line or
+# short line).
+
+def is_heading(line: str, prev_blank: bool) -> bool:
+    line = line.strip()
+    if not line:
+        return False
+    if len(line) > 50:
+        return False
+    # Must have Hebrew letters
+    if not re.search(r"[\u05d0-\u05ea]", line):
+        return False
+    # Common heading indicators: short, possibly after blank line
+    return True
+
+def split_into_articles(text: str) -> list[dict]:
+    """Split text into articles. Each article = heading + body block."""
+    lines = text.split("\n")
+    articles = []
+    current_heading = "פתיח"
+    current_body_lines = []
+
+    def flush_article():
+        body = "\n".join(current_body_lines).strip()
+        if body or current_heading != "פתיח":
+            articles.append({
+                "heading": current_heading,
+                "body": body,
+                "words": len(body.split())
+            })
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        # Detect article boundary: short non-empty line after blank
+        prev_blank = (i > 0 and not lines[i-1].strip())
+        next_blank = (i < len(lines)-1 and not lines[i+1].strip()) if i < len(lines)-1 else True
+
+        if (prev_blank or i == 0) and is_heading(line, prev_blank) and len(line) <= 40:
+            # Could be a new heading — check if next non-blank line is longer (body)
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            next_content = lines[j].strip() if j < len(lines) else ""
+            # If next content is substantially longer, this is a heading
+            if not next_content or len(next_content) > len(line):
+                flush_article()
+                current_heading = line
+                current_body_lines = []
+                i += 1
+                continue
+
+        current_body_lines.append(lines[i])
+        i += 1
+
+    flush_article()
+    return articles
+
+
+def detect_tail_section(heading: str, body: str) -> str | None:
+    """Return TAIL_ORDER section name if this article belongs to one."""
+    combined = heading + " " + body[:200]
+    if re.search(r"הקיבוץ הדתי|התנועה ואנחנו", combined):
+        return "הקיבוץ הדתי"
+    if re.search(r"לוח זמנים|זמני התפילות|הדלקת נרות|מנחה.*שחרית|שחרית.*מנחה", combined):
+        return "לוח זמנים"
+    if re.search(r"^כלבודף|כלבודף$", heading.strip()):
+        return "כלבודף"
+    return None
 
 
 def split_segments(text: str) -> list[dict]:
-    compiled = [(re.compile(pat, re.MULTILINE), title) for pat, title in SECTIONS]
+    MAX_WORDS = 700   # target max per segment
 
-    # Detect לוח זמנים — the last page with prayer times
-    lz_match = re.search(r"כ[\s]*י[\s]+ת[\s]*י[\s]*ש[\s]*א.*\nזמני|זמני התפילות", text)
+    articles = split_into_articles(text)
 
-    lines = text.split("\n")
-    current = "פתיח"
-    tagged = []
-    for i, line in enumerate(lines):
-        context = "\n".join(l for _, l in tagged[-2:]) + "\n" + line
-        for regex, title in compiled:
-            if regex.search(context):
-                current = title
-                break
-        # Detect לוח זמנים inline
-        if i > len(lines) * 0.8 and re.search(r"זמני התפילות|הדלקת נרות", line):
-            current = "לוח זמנים"
-        tagged.append((current, line))
+    # Classify each article
+    main_articles = []
+    tail_dict = {t: [] for t in TAIL_ORDER}
 
-    # Group consecutive lines by section
-    raw = []
-    for sec, grp in groupby(tagged, key=lambda x: x[0]):
-        body = "\n".join(l for _, l in grp).strip()
-        words = len(body.split())
-        raw.append({"title": sec, "body": body, "words": words})
-
-    # Absorb tiny stubs (TOC entries) into previous section
-    merged = []
-    for s in raw:
-        if s["words"] < 25 and merged and s["title"] not in TAIL_ORDER:
-            merged[-1]["body"] += "\n\n" + s["body"]
-            merged[-1]["words"] += s["words"]
+    for art in articles:
+        tail = detect_tail_section(art["heading"], art["body"])
+        if tail:
+            tail_dict[tail].append(art)
         else:
-            merged.append(dict(s))
+            main_articles.append(art)
 
-    # Pack into display segments (~600 words max), never break TAIL_ORDER sections
-    MAX = 600
+    # Pack main articles into segments of ~MAX_WORDS
+    # Never split an article across segments
     segments = []
-    buf_title = buf_body = ""
+    buf_headings = []
+    buf_body_parts = []
     buf_words = 0
 
-    def flush():
-        nonlocal buf_title, buf_body, buf_words
-        if buf_body.strip():
-            segments.append({"title": buf_title, "body": buf_body.strip()})
-        buf_title = buf_body = ""
+    def flush_main():
+        nonlocal buf_headings, buf_body_parts, buf_words
+        if not buf_body_parts and not buf_headings:
+            return
+        seg_num = len(segments) + 1
+        # Title = segment number + article names
+        names = [h for h in buf_headings if h and h != "פתיח"]
+        if names:
+            title = str(seg_num) + ". " + " / ".join(names)
+        else:
+            title = str(seg_num) + ". פתיח"
+        body = "\n\n".join(buf_body_parts)
+        segments.append({"title": title, "body": body})
+        buf_headings = []
+        buf_body_parts = []
         buf_words = 0
 
-    for s in merged:
-        if s["title"] in TAIL_ORDER:
-            flush()
-            segments.append({"title": s["title"], "body": s["body"]})
-            continue
-        if buf_words + s["words"] > MAX and buf_words > 80:
-            flush()
-        if not buf_title:
-            buf_title = s["title"]
-        buf_body += ("\n\n" if buf_body else "") + s["body"]
-        buf_words += s["words"]
-    flush()
+    for art in main_articles:
+        w = art["words"]
+        # If this single article exceeds MAX, flush what we have and add it alone
+        if buf_words > 0 and buf_words + w > MAX_WORDS:
+            flush_main()
+        heading_line = art["heading"] if art["heading"] != "פתיח" else ""
+        buf_headings.append(art["heading"])
+        buf_body_parts.append((heading_line + "\n" + art["body"]).strip())
+        buf_words += w
+        # If we've hit the target, flush
+        if buf_words >= MAX_WORDS:
+            flush_main()
 
-    # Enforce tail order: move TAIL_ORDER segments to end in correct order
-    main = [s for s in segments if s["title"] not in TAIL_ORDER]
-    tail = []
+    flush_main()
+
+    # Add tail sections in order (only if they have content)
     for t in TAIL_ORDER:
-        matches = [s for s in segments if s["title"] == t]
-        tail.extend(matches)
+        arts = tail_dict[t]
+        if not arts:
+            continue
+        seg_num = len(segments) + 1
+        title = str(seg_num) + ". " + t
+        body = "\n\n".join(
+            (a["heading"] + "\n" + a["body"]).strip() for a in arts
+        )
+        segments.append({"title": title, "body": body})
 
-    return main + tail
+    return segments
 
 # ─── ROUTES ──────────────────────────────────────────────────────────────────
 
@@ -300,8 +359,21 @@ def set_issue():
 def update_issue():
     data = request.json
     conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE issues SET description=%s WHERE id=%s",
-                (data.get("description", ""), data["issue_id"]))
+    if "title" in data:
+        cur.execute("UPDATE issues SET title=%s WHERE id=%s",
+                    (data["title"], data["issue_id"]))
+    if "description" in data:
+        cur.execute("UPDATE issues SET description=%s WHERE id=%s",
+                    (data["description"], data["issue_id"]))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/rename_segment", methods=["POST"])
+def rename_segment():
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE segments SET title=%s WHERE id=%s",
+                (data["title"], data["segment_id"]))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
@@ -310,7 +382,6 @@ def delete_issue():
     data = request.json
     issue_id = data["issue_id"]
     conn = get_db(); cur = conn.cursor()
-    # If active issue, clear state
     cur.execute("SELECT issue_id FROM listener_state WHERE id=1")
     state = cur.fetchone()
     if state and state["issue_id"] == issue_id:
@@ -332,7 +403,6 @@ def delete_segment():
     data = request.json
     conn = get_db(); cur = conn.cursor()
     cur.execute("DELETE FROM segments WHERE id=%s", (data["segment_id"],))
-    # Re-number positions
     cur.execute("""
         WITH ranked AS (
             SELECT id, ROW_NUMBER() OVER (ORDER BY position) - 1 as new_pos
@@ -896,17 +966,12 @@ h1{font-size:32px;font-weight:900;margin-bottom:3px}
 .sub{color:var(--muted);font-size:14px;margin-bottom:36px}
 .card{background:var(--surface);border:1px solid var(--border);
   border-radius:var(--r);padding:28px;margin-bottom:20px}
-.card h2{font-size:17px;font-weight:700;margin-bottom:16px;
-  display:flex;align-items:center;justify-content:space-between}
-
-/* listener link */
+.card-title{font-size:17px;font-weight:700;margin-bottom:16px}
 .llink{display:flex;align-items:center;gap:10px;background:var(--green-light);
   border:1px solid var(--green-border);border-radius:10px;padding:14px 16px;
   text-decoration:none;color:var(--green);font-weight:700;font-size:15px;transition:opacity .2s}
 .llink:hover{opacity:.85}
-.llink .ic{font-size:22px}
-
-/* upload zone */
+/* upload */
 #dz{border:2px dashed var(--border);border-radius:12px;padding:48px 20px;
   text-align:center;cursor:pointer;transition:all .2s;background:var(--bg)}
 #dz:hover,#dz.over{border-color:var(--green);background:var(--green-light)}
@@ -920,75 +985,62 @@ h1{font-size:32px;font-weight:900;margin-bottom:3px}
   font-family:'Heebo',sans-serif;cursor:pointer;transition:opacity .2s;display:none}
 .ubtn:hover{opacity:.9}
 .ubtn.vis{display:block}
-#prog{height:4px;background:var(--border);border-radius:99px;overflow:hidden;
-  margin-top:12px;display:none}
+#prog{height:4px;background:var(--border);border-radius:99px;overflow:hidden;margin-top:12px;display:none}
 #pfill{height:100%;background:var(--green);border-radius:99px;width:0;transition:width .4s}
-#st{margin-top:14px;padding:13px 15px;border-radius:10px;font-size:14px;
-  font-weight:700;display:none}
+#st{margin-top:14px;padding:13px 15px;border-radius:10px;font-size:14px;font-weight:700;display:none}
 #st.ok{background:var(--green-light);color:var(--green)}
 #st.err{background:var(--red-light);color:var(--red)}
 #st.wait{background:#f0f0f0;color:var(--muted)}
 #preview{margin-top:14px;display:none}
 #preview h3{font-size:13px;color:var(--muted);margin-bottom:8px}
 #preview-list{display:flex;flex-wrap:wrap;gap:6px}
-.ptag{background:var(--green-light);color:var(--green);border-radius:99px;
-  padding:4px 12px;font-size:13px;font-weight:700}
-
-/* issues list */
-.issue-row{border:1px solid var(--border);border-radius:12px;
-  margin-bottom:12px;overflow:hidden}
-.issue-head{display:flex;align-items:center;gap:12px;padding:16px 18px;
+.ptag{background:var(--green-light);color:var(--green);border-radius:99px;padding:4px 12px;font-size:13px;font-weight:700}
+/* issue rows */
+.issue-row{border:1px solid var(--border);border-radius:12px;margin-bottom:12px;overflow:hidden}
+.issue-head{display:flex;align-items:center;gap:12px;padding:14px 18px;
   cursor:pointer;background:var(--surface);transition:background .15s;user-select:none}
 .issue-head:hover{background:#faf8f4}
-.issue-head.cur{background:var(--green-light)}
-.ih-info{flex:1}
+.issue-head.active-issue{background:var(--green-light)}
+.ih-badge{background:var(--green);color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:99px;white-space:nowrap}
+.ih-info{flex:1;min-width:0}
 .ih-title{font-weight:700;font-size:15px}
 .ih-meta{font-size:12px;color:var(--muted);margin-top:2px}
-.ih-badge{background:var(--green);color:#fff;font-size:11px;font-weight:700;
-  padding:3px 9px;border-radius:99px}
-.ih-chevron{font-size:14px;color:var(--muted);transition:transform .2s}
+.ih-chevron{font-size:13px;color:var(--muted);transition:transform .2s;flex-shrink:0}
 .ih-chevron.open{transform:rotate(180deg)}
-
-/* issue detail panel */
-.issue-detail{display:none;border-top:1px solid var(--border);padding:18px;
-  background:#fdfcfa}
+/* detail panel */
+.issue-detail{display:none;border-top:1px solid var(--border);padding:18px;background:#fdfcfa}
 .issue-detail.open{display:block}
-
-/* description field */
-.desc-row{display:flex;gap:10px;margin-bottom:14px;align-items:flex-start}
-.desc-row textarea{flex:1;border:1px solid var(--border);border-radius:10px;
-  padding:10px 12px;font-family:'Heebo',sans-serif;font-size:14px;
-  resize:none;height:56px;color:var(--text);background:var(--surface)}
-.desc-row textarea:focus{outline:none;border-color:var(--green)}
-.save-btn{padding:10px 18px;background:var(--green);color:#fff;border:none;
-  border-radius:10px;font-family:'Heebo',sans-serif;font-weight:700;
-  font-size:14px;cursor:pointer;white-space:nowrap;transition:opacity .2s}
+/* inline edit */
+.edit-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.edit-row input,.edit-row textarea{flex:1;border:1px solid var(--border);border-radius:8px;
+  padding:8px 12px;font-family:'Heebo',sans-serif;font-size:14px;color:var(--text);background:#fff}
+.edit-row input:focus,.edit-row textarea:focus{outline:none;border-color:var(--green)}
+.edit-row textarea{resize:none;height:48px}
+.edit-label{font-size:12px;color:var(--muted);white-space:nowrap;min-width:60px}
+.save-btn{padding:8px 16px;background:var(--green);color:#fff;border:none;
+  border-radius:8px;font-family:'Heebo',sans-serif;font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap}
 .save-btn:hover{opacity:.9}
-
+.saved-flash{font-size:12px;color:var(--green);display:none}
 /* segments */
-.seg-list{margin-top:4px}
-.seg-row{display:flex;align-items:center;gap:10px;padding:10px 0;
-  border-bottom:1px solid var(--border)}
+.segs-header{font-size:13px;font-weight:700;color:var(--muted);margin:14px 0 8px;padding-top:14px;border-top:1px solid var(--border)}
+.seg-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f0ede8}
 .seg-row:last-child{border-bottom:none}
-.seg-num{font-size:12px;color:var(--muted);min-width:24px;text-align:center}
-.seg-title{flex:1;font-size:14px;font-weight:700}
-.seg-words{font-size:12px;color:var(--muted)}
-.del-btn{padding:5px 12px;background:transparent;border:1px solid #e0c0c0;
-  border-radius:8px;color:var(--red);font-family:'Heebo',sans-serif;
-  font-size:12px;font-weight:700;cursor:pointer;transition:all .2s}
-.del-btn:hover{background:var(--red-light)}
-
-/* action buttons */
-.act-row{display:flex;gap:10px;margin-top:16px;padding-top:14px;
-  border-top:1px solid var(--border)}
-.act-btn{padding:9px 18px;border:none;border-radius:10px;
-  font-family:'Heebo',sans-serif;font-weight:700;font-size:14px;
-  cursor:pointer;transition:opacity .2s}
+.seg-num{font-size:12px;color:var(--muted);min-width:22px;text-align:center}
+.seg-name-input{flex:1;border:1px solid transparent;border-radius:6px;padding:5px 8px;
+  font-family:'Heebo',sans-serif;font-size:13px;font-weight:700;color:var(--text);background:transparent;cursor:text}
+.seg-name-input:focus{border-color:var(--green);background:#fff;outline:none}
+.seg-words{font-size:11px;color:var(--muted);white-space:nowrap}
+.del-seg-btn{padding:4px 10px;background:transparent;border:1px solid #e0c0c0;
+  border-radius:6px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
+.del-seg-btn:hover{background:var(--red-light)}
+/* action row */
+.act-row{display:flex;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid var(--border)}
+.act-btn{padding:10px 18px;border:none;border-radius:10px;font-family:'Heebo',sans-serif;
+  font-weight:700;font-size:14px;cursor:pointer;transition:opacity .2s}
 .act-btn:hover{opacity:.85}
 .act-activate{background:var(--green);color:#fff;flex:1}
-.act-activate.cur{background:#888;cursor:default}
-.act-delete{background:var(--red-light);color:var(--red);
-  border:1px solid #e0c0c0}
+.act-activate.is-cur{background:#888;cursor:default}
+.act-delete{background:var(--red-light);color:var(--red);border:1px solid #e0c0c0}
 </style>
 </head>
 <body>
@@ -998,18 +1050,18 @@ h1{font-size:32px;font-weight:900;margin-bottom:3px}
 
   <div class="card">
     <a href="/" class="llink" target="_blank">
-      <span class="ic">🎧</span> פתח נגן האזנה (צד אבא)
+      <span>🎧</span> פתח נגן האזנה (צד אבא)
     </a>
   </div>
 
   <div class="card">
-    <h2>העלאת ידיעון חדש</h2>
+    <div class="card-title">העלאת ידיעון חדש</div>
     <div id="dz" onclick="document.getElementById('fi').click()"
          ondragover="event.preventDefault();this.classList.add('over')"
          ondragleave="this.classList.remove('over')"
-         ondrop="drop(event)">
+         ondrop="dropFile(event)">
       <div class="ic">📄</div>
-      <div class="ht">גרור לכאן קובץ PDF של הידיעון</div>
+      <div class="ht">גרור לכאן קובץ PDF</div>
       <div class="sb2">או לחץ לבחירה</div>
     </div>
     <input type="file" id="fi" accept=".pdf" onchange="pick(this.files[0])">
@@ -1021,15 +1073,15 @@ h1{font-size:32px;font-weight:900;margin-bottom:3px}
   </div>
 
   <div class="card">
-    <h2>ידיעונים שמורים <span id="count-badge" style="font-size:13px;color:var(--muted);font-weight:400"></span></h2>
+    <div class="card-title">ידיעונים שמורים</div>
     <div id="ilist"><div style="color:var(--muted);font-size:14px">טוען...</div></div>
   </div>
 </div>
 
 <script>
-var file=null, expandedId=null;
+var file=null, curIssueId=null;
 
-function drop(e){
+function dropFile(e){
   e.preventDefault();
   document.getElementById('dz').classList.remove('over');
   var f=e.dataTransfer.files[0];
@@ -1038,7 +1090,7 @@ function drop(e){
 function pick(f){
   if(!f)return; file=f;
   var fn=document.getElementById('fn');
-  fn.style.display='block'; fn.textContent='📎 '+f.name;
+  fn.style.display='block'; fn.textContent='קובץ: '+f.name;
   document.getElementById('ub').classList.add('vis');
   document.getElementById('preview').style.display='none';
   document.getElementById('st').style.display='none';
@@ -1058,16 +1110,14 @@ async function doUpload(){
     fill.style.width='100%';
     if(d.ok){
       st.className='ok';
-      st.textContent='הידיעון הועלה: '+d.title+' ('+d.segments+' קטעים)';
+      st.textContent='הועלה: '+d.title+' ('+d.segments+' קטעים)';
       if(d.preview){
         document.getElementById('preview').style.display='block';
         document.getElementById('preview-list').innerHTML=
           d.preview.map(function(t,i){return '<span class="ptag">'+(i+1)+'. '+t+'</span>';}).join('');
       }
       loadIssues();
-    }else{
-      st.className='err'; st.textContent='שגיאה: '+d.error;
-    }
+    }else{st.className='err';st.textContent='שגיאה: '+d.error;}
   }catch(e){st.className='err';st.textContent='שגיאת חיבור';}
   ub.disabled=false; ub.textContent='העלה ועבד';
 }
@@ -1076,33 +1126,36 @@ async function loadIssues(){
   var ir=await fetch('/api/issues');
   var cr=await fetch('/api/current');
   var issues=await ir.json(), cur=await cr.json();
-  var curId=cur.issue_id||null;
+  curIssueId=cur.issue_id||null;
   var list=document.getElementById('ilist');
-  document.getElementById('count-badge').textContent=issues.length ? '('+issues.length+')' : '';
-  if(!issues.length){
-    list.innerHTML='<div style="color:var(--muted);font-size:14px">אין ידיעונים עדיין</div>';
-    return;
-  }
+  if(!issues.length){list.innerHTML='<div style="color:var(--muted);font-size:14px">אין ידיעונים עדיין</div>';return;}
   list.innerHTML=issues.map(function(iss){
-    var isCur=iss.id===curId;
+    var isCur=iss.id===curIssueId;
     var d=new Date(iss.created_at).toLocaleDateString('he-IL');
     return '<div class="issue-row" id="ir-'+iss.id+'">'+
-      '<div class="issue-head'+(isCur?' cur':'')+'" onclick="toggleDetail('+iss.id+','+isCur+')">'+
+      '<div class="issue-head'+(isCur?' active-issue':'')+'" onclick="toggleIssue('+iss.id+')">'+
         (isCur?'<span class="ih-badge">פעיל</span>':'')+
         '<div class="ih-info">'+
-          '<div class="ih-title">'+iss.title+'</div>'+
+          '<div class="ih-title" id="iht-'+iss.id+'">'+iss.title+'</div>'+
           '<div class="ih-meta">'+(iss.description||'ללא תיאור')+' &nbsp;·&nbsp; '+d+' &nbsp;·&nbsp; '+iss.seg_count+' קטעים</div>'+
         '</div>'+
         '<span class="ih-chevron" id="chev-'+iss.id+'">▾</span>'+
       '</div>'+
       '<div class="issue-detail" id="det-'+iss.id+'">'+
-        '<div class="desc-row">'+
-          '<textarea id="desc-'+iss.id+'" placeholder="תיאור: פרשה, גיליון...">'+(iss.description||'')+'</textarea>'+
-          '<button class="save-btn" onclick="saveDesc('+iss.id+')">שמור</button>'+
+        '<div class="edit-row"><span class="edit-label">שם:</span>'+
+          '<input id="ititle-'+iss.id+'" value="'+iss.title.replace(/"/g,'&quot;')+'" onkeydown="if(event.key===\'Enter\')saveTitle('+iss.id+')">'+
+          '<button class="save-btn" onclick="saveTitle('+iss.id+')">שמור</button>'+
+          '<span class="saved-flash" id="sf-t-'+iss.id+'">נשמר</span>'+
         '</div>'+
-        '<div class="seg-list" id="segs-'+iss.id+'"><div style="color:var(--muted);font-size:13px">טוען קטעים...</div></div>'+
+        '<div class="edit-row"><span class="edit-label">תיאור:</span>'+
+          '<textarea id="idesc-'+iss.id+'">'+((iss.description||'').replace(/</g,'&lt;'))+'</textarea>'+
+          '<button class="save-btn" onclick="saveDesc('+iss.id+')">שמור</button>'+
+          '<span class="saved-flash" id="sf-d-'+iss.id+'">נשמר</span>'+
+        '</div>'+
+        '<div class="segs-header">קטעים</div>'+
+        '<div id="segs-'+iss.id+'"><div style="color:var(--muted);font-size:13px">טוען...</div></div>'+
         '<div class="act-row">'+
-          '<button class="act-btn act-activate'+(isCur?' cur':'')+'" onclick="'+(isCur?'':('activate('+iss.id+')'))+'">'+(isCur?'✓ פעיל כעת':'הפעל ידיעון זה')+'</button>'+
+          '<button class="act-btn act-activate'+(isCur?' is-cur':'')+'" id="actbtn-'+iss.id+'" onclick="'+(isCur?'':('activateIssue('+iss.id+')'))+'">'+(isCur?'פעיל כעת':'הפעל ידיעון זה')+'</button>'+
           '<button class="act-btn act-delete" onclick="deleteIssue('+iss.id+')">מחק ידיעון</button>'+
         '</div>'+
       '</div>'+
@@ -1110,21 +1163,13 @@ async function loadIssues(){
   }).join('');
 }
 
-async function toggleDetail(id, isCur){
+function toggleIssue(id){
   var det=document.getElementById('det-'+id);
   var chev=document.getElementById('chev-'+id);
   var isOpen=det.classList.contains('open');
-  // close all
   document.querySelectorAll('.issue-detail').forEach(function(el){el.classList.remove('open');});
   document.querySelectorAll('.ih-chevron').forEach(function(el){el.classList.remove('open');});
-  if(!isOpen){
-    det.classList.add('open');
-    chev.classList.add('open');
-    expandedId=id;
-    loadSegments(id);
-  } else {
-    expandedId=null;
-  }
+  if(!isOpen){det.classList.add('open');chev.classList.add('open');loadSegments(id);}
 }
 
 async function loadSegments(issueId){
@@ -1136,42 +1181,61 @@ async function loadSegments(issueId){
     var words=s.body.split(' ').length;
     return '<div class="seg-row" id="sr-'+s.id+'">'+
       '<span class="seg-num">'+(s.position+1)+'</span>'+
-      '<span class="seg-title">'+s.title+'</span>'+
-      '<span class="seg-words">'+words+' מילים</span>'+
-      '<button class="del-btn" onclick="deleteSeg('+s.id+','+issueId+')">מחק</button>'+
+      '<input class="seg-name-input" id="sn-'+s.id+'" value="'+s.title.replace(/"/g,'&quot;')+
+        '" onblur="renameSeg('+s.id+','+issueId+')" onkeydown="if(event.key===\'Enter\')this.blur()">'+
+      '<span class="seg-words">'+words+' מ\'</span>'+
+      '<button class="del-seg-btn" onclick="deleteSeg('+s.id+','+issueId+')">מחק</button>'+
     '</div>';
   }).join('');
 }
 
-async function saveDesc(issueId){
-  var desc=document.getElementById('desc-'+issueId).value;
-  await fetch('/api/update_issue',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({issue_id:issueId,description:desc})});
-  loadIssues();
+function flash(id){
+  var el=document.getElementById(id);
+  if(!el)return;
+  el.style.display='inline';
+  setTimeout(function(){el.style.display='none';},1500);
 }
 
-async function activate(id){
+async function saveTitle(id){
+  var val=document.getElementById('ititle-'+id).value;
+  await fetch('/api/update_issue',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({issue_id:id,title:val})});
+  document.getElementById('iht-'+id).textContent=val;
+  flash('sf-t-'+id);
+}
+async function saveDesc(id){
+  var val=document.getElementById('idesc-'+id).value;
+  await fetch('/api/update_issue',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({issue_id:id,description:val})});
+  flash('sf-d-'+id);
+  loadIssues();
+}
+async function renameSeg(segId,issueId){
+  var val=document.getElementById('sn-'+segId).value;
+  await fetch('/api/rename_segment',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({segment_id:segId,title:val})});
+}
+async function activateIssue(id){
   await fetch('/api/set_issue',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({issue_id:id})});
   loadIssues();
 }
-
 async function deleteIssue(id){
   if(!confirm('למחוק את הידיעון וכל קטעיו?'))return;
   await fetch('/api/delete_issue',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({issue_id:id})});
   loadIssues();
 }
-
-async function deleteSeg(segId, issueId){
+async function deleteSeg(segId,issueId){
   if(!confirm('למחוק קטע זה?'))return;
   await fetch('/api/delete_segment',{method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({segment_id:segId,issue_id:issueId})});
   loadSegments(issueId);
 }
-
 loadIssues();
 </script>
 </body>
