@@ -60,9 +60,11 @@ PARASHA_RE = re.compile(
     r"במדבר|נשא|בהעלותך|שלח|קרח|חוקת|בלק|פינחס|מטות|מסעי|"
     r"דברים|ואתחנן|עקב|ראה|שופטים|כי תצא|כי תבוא|נצבים|וילך|האזינו|וזאת הברכה)"
 )
+# Special parshiyot / additions that can follow a parasha name with a dash
+SPECIAL_RE = re.compile(r"(שקלים|זכור|פרה|החודש|הגדול|שובה|ראש השנה|יום כיפור)")
 
-# Nikud unicode range
-NIKUD_RE = re.compile(r"[\u05b0-\u05c7]")
+# Nikud (U+05B0-U+05C7) + Taamei hamikra (U+0591-U+05AF) — remove without leaving spaces
+NIKUD_RE = re.compile(r"[\u0591-\u05c7]")
 
 def strip_nikud(text: str) -> str:
     return NIKUD_RE.sub("", text)
@@ -92,18 +94,24 @@ def extract_text_from_pdf(path: str) -> str:
 
 def detect_title(text: str) -> str:
     head = strip_nikud(text[:800])
-    # Find issue number — search whole head, numbers are now correct
+    # Find issue number
     m3 = re.search(r"גיליון\s+(\d+)", head)
     issue_num = m3.group(1) if m3 else None
     # Find parasha
     m = PARASHA_RE.search(head)
     if m:
         parasha = m.group(0)
-        # Check for combined parasha (e.g. נצבים-וילך)
-        rest = head[m.end():m.end()+60]
-        m2 = re.search(r"[-–]\s*(" + PARASHA_RE.pattern + r")", rest)
+        # Check for combined parasha or special: e.g. "כי תשא - פרה" or "נצבים-וילך"
+        rest = head[m.end():m.end()+80]
+        # Try another regular parasha first
+        m2 = re.search(r"\s*[-–]\s*(" + PARASHA_RE.pattern + r")", rest)
         if m2:
-            parasha += "-" + m2.group(1)
+            parasha += " - " + m2.group(1)
+        else:
+            # Try special parasha
+            ms = re.search(r"\s*[-–]\s*(" + SPECIAL_RE.pattern + r")", rest)
+            if ms:
+                parasha += " - " + ms.group(1)
         if issue_num:
             return "ידיעון " + parasha + " גיליון " + issue_num
         return "ידיעון " + parasha
