@@ -454,7 +454,7 @@ function render(){
   const seg=S.segments[S.current_position];
   document.getElementById('issue-lbl').textContent=S.issue_title;
   document.getElementById('seg-lbl').textContent=seg.title;
-  document.getElementById('pos-lbl').textContent=`קטע ${S.current_position+1} מתוך ${S.total}`;
+  document.getElementById('pos-lbl').textContent='\u05e7\u05d8\u05e2 '+(S.current_position+1)+' \u05de\u05ea\u05d5\u05da '+S.total;
   document.getElementById('body').textContent=seg.body;
   document.getElementById('pfill').style.width=((S.current_position+1)/S.total*100)+'%';
   document.getElementById('ta').scrollTop=0;
@@ -462,12 +462,7 @@ function render(){
 }
 function renderD(){
   if(!S)return;
-  document.getElementById('segl').innerHTML=S.segments.map((s,i)=>`
-    <div class="si ${i===S.current_position?'cur':''}" onclick="jump(${i})">
-      <div class="n">${i+1}</div>
-      <div class="dot"></div>
-      <div class="nm">${s.title}</div>
-    </div>`).join('');
+  document.getElementById('segl').innerHTML=S.segments.map((s,i)=>'<div class="si '+(i===S.current_position?'cur':'')+'" onclick="jump('+i+')"><div class="n">'+(i+1)+'</div><div class="dot"></div><div class="nm">'+s.title+'</div></div>').join('');
 }
 function jump(p){stop();S.current_position=p;savePos(p);render();closeD();}
 function nav(d){
@@ -672,11 +667,11 @@ async function upload(){
     fill.style.width='100%';
     if(d.ok){
       st.className='ok';
-      st.textContent=`✅ "${d.title}" — ${d.segments} קטעים`;
+      st.textContent='\u2705 "'+d.title+'" \u2014 '+d.segments+' \u05e7\u05d8\u05e2\u05d9\u05dd';
       if(d.preview){
         document.getElementById('preview').style.display='block';
         document.getElementById('preview-list').innerHTML=
-          d.preview.map((t,i)=>`<span class="ptag">${i+1}. ${t}</span>`).join('');
+          d.preview.map((t,i)=>'<span class="ptag">'+(i+1)+'. '+t+'</span>').join('');
       }
       loadIssues();
     }else{
@@ -694,15 +689,8 @@ async function loadIssues(){
   list.innerHTML=issues.map(i=>{
     const d=new Date(i.created_at).toLocaleDateString('he-IL');
     const isCur=i.id===curId;
-    return `<div class="row">
-      <div class="ri">
-        <div class="rt">${i.title}</div>
-        <div class="rm">${d} · ${i.seg_count} קטעים${isCur?' · <strong>פעיל</strong>':''}</div>
-      </div>
-      <button class="abtn ${isCur?'cur':''}" onclick="${isCur?'':('activate('+i.id+')')}">
-        ${isCur?'✓ פעיל':'הפעל'}
-      </button>
-    </div>`;
+    return '<div class="row"><div class="ri"><div class="rt">'+i.title+'</div><div class="rm">'+d+' \u00b7 '+i.seg_count+' \u05e7\u05d8\u05e2\u05d9\u05dd'+(isCur?' \u00b7 <strong>\u05e4\u05e2\u05d9\u05dc</strong>':'')+
+      '</div></div><button class="abtn '+(isCur?'cur':'')+'" onclick="'+(isCur?'':('activate('+i.id+')'))+'">'+(isCur?'\u2713 \u05e4\u05e2\u05d9\u05dc':'\u05d4\u05e4\u05e2\u05dc')+'</button></div>';
   }).join('');
 }
 async function activate(id){
