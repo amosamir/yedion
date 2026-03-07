@@ -296,6 +296,7 @@ LISTENER_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>ידיעון בארות יצחק</title>
@@ -309,26 +310,68 @@ LISTENER_HTML = """<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;background:var(--bg);color:var(--text);
   font-family:'Heebo',sans-serif;overflow:hidden}
-#app{display:flex;flex-direction:column;height:100dvh;max-width:520px;
+
+/* ── LOADING SCREEN ── */
+#ls{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:14px;z-index:99;
+  font-size:17px;color:var(--muted);text-align:center;padding:36px}
+#ls .em{font-size:52px}
+
+/* ── BLIND SCREEN ── */
+#blind{position:fixed;inset:0;background:var(--bg);display:none;
+  flex-direction:column;align-items:center;justify-content:center;
+  gap:28px;padding:32px;z-index:10}
+#blind-title{font-size:15px;color:var(--accent);font-weight:700;
+  letter-spacing:.08em;text-align:center}
+#blind-seg{font-size:22px;font-weight:900;text-align:center;
+  line-height:1.3;color:var(--text)}
+#blind-status{font-size:16px;color:var(--muted);text-align:center;
+  min-height:24px}
+#vcbtn{width:100%;max-width:340px;padding:40px 20px;
+  background:var(--surface2);border:3px solid var(--border);
+  border-radius:32px;color:var(--text);font-family:'Heebo',sans-serif;
+  font-size:26px;font-weight:900;cursor:pointer;transition:all .2s;
+  -webkit-user-select:none;user-select:none}
+#vcbtn:active{transform:scale(.96)}
+#vcbtn.listening{background:#2a1010;border-color:#e87a7a;color:#e87a7a;
+  animation:pulse 1s ease-in-out infinite}
+#vcbtn.ok{border-color:var(--accent);color:var(--accent)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+#vcmsg{font-size:15px;color:var(--muted);text-align:center;min-height:22px}
+#detail-btn{padding:16px 36px;background:transparent;
+  border:1px solid var(--border);border-radius:99px;
+  color:var(--muted);font-family:'Heebo',sans-serif;
+  font-size:16px;font-weight:700;cursor:pointer;transition:all .2s}
+#detail-btn:active{background:var(--surface2)}
+#blind-pi{display:flex;align-items:center;justify-content:center;
+  gap:8px;height:20px;opacity:0;transition:opacity .3s}
+#blind-pi.on{opacity:1}
+
+/* ── DETAIL SCREEN ── */
+#app{display:none;flex-direction:column;height:100dvh;max-width:520px;
   margin:0 auto;padding:max(env(safe-area-inset-top),14px) 16px
   max(env(safe-area-inset-bottom),14px);gap:10px}
+#app.vis{display:flex}
 
-/* header */
-#hdr{display:flex;flex-direction:column;gap:3px;padding-top:4px}
-#issue-lbl{font-size:11px;color:var(--accent);font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+/* back to blind button */
+#back-blind{display:flex;align-items:center;gap:8px;padding:10px 0 4px;
+  background:transparent;border:none;color:var(--accent);
+  font-family:'Heebo',sans-serif;font-size:15px;font-weight:700;
+  cursor:pointer;flex-shrink:0}
+
+#hdr{display:flex;flex-direction:column;gap:3px}
+#issue-lbl{font-size:11px;color:var(--accent);font-weight:700;
+  letter-spacing:.08em;text-transform:uppercase}
 #seg-lbl{font-size:21px;font-weight:900;line-height:1.2}
 #pos-lbl{font-size:12px;color:var(--muted)}
 
-/* progress */
 #pbar{height:3px;background:var(--border);border-radius:99px;overflow:hidden;flex-shrink:0}
 #pfill{height:100%;background:var(--accent);border-radius:99px;transition:width .4s ease;width:0}
 
-/* text */
 #ta{flex:1;background:var(--surface);border-radius:var(--r);padding:20px;
   overflow-y:auto;border:1px solid var(--border);-webkit-overflow-scrolling:touch}
 #body{font-size:19px;line-height:1.95;white-space:pre-wrap}
 
-/* playing indicator */
 #pi{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--accent);
   opacity:0;transition:opacity .3s;height:18px;flex-shrink:0}
 #pi.on{opacity:1}
@@ -339,7 +382,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 .bars span:nth-child(3){animation-delay:.3s}
 @keyframes b{0%,100%{height:3px}50%{height:13px}}
 
-/* main controls */
 #ctrl{display:grid;grid-template-columns:1fr 1.7fr 1fr;gap:10px;flex-shrink:0}
 .btn{border:none;border-radius:var(--r);cursor:pointer;
   font-family:'Heebo',sans-serif;font-weight:700;
@@ -352,26 +394,19 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 .play{background:var(--accent);color:#111;padding:22px 10px;font-size:34px;border-radius:24px}
 .play.on{background:var(--accent2)}
 
-/* speed */
 #spd{display:flex;gap:7px;justify-content:center;flex-shrink:0;padding-bottom:2px}
 .sb{background:var(--surface2);border:1px solid var(--border);color:var(--muted);
-  border-radius:99px;padding:8px 16px;font-size:15px;
+  border-radius:99px;padding:8px 14px;font-size:14px;
   font-family:'Heebo',sans-serif;font-weight:700;cursor:pointer;transition:all .2s}
 .sb.on{background:var(--accent);color:#111;border-color:var(--accent)}
-
-/* loading */
-#ls{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;
-  align-items:center;justify-content:center;gap:14px;z-index:99;
-  font-size:17px;color:var(--muted);text-align:center;padding:36px}
-#ls .em{font-size:52px}
-#ls.h{display:none}
 
 /* list button */
 #listbtn{position:fixed;top:max(env(safe-area-inset-top),14px);left:16px;
   background:var(--surface2);border:1px solid var(--border);
   color:var(--text);width:44px;height:44px;border-radius:12px;
   font-size:20px;cursor:pointer;z-index:10;
-  display:flex;align-items:center;justify-content:center}
+  display:none;align-items:center;justify-content:center}
+#listbtn.vis{display:flex}
 
 /* drawer */
 #ov{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:20;
@@ -394,23 +429,31 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 .si.cur .nm{color:var(--accent)}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);flex-shrink:0;opacity:0}
 .si.cur .dot{opacity:1}
-
-/* voice */
-#vcbtn{width:100%;padding:18px;background:var(--surface2);border:2px solid var(--border);
-  border-radius:var(--r);color:var(--text);font-family:'Heebo',sans-serif;
-  font-size:20px;font-weight:700;cursor:pointer;transition:all .2s;flex-shrink:0}
-#vcbtn.listening{background:#3a1a1a;border-color:#e87a7a;color:#e87a7a;
-  animation:pulse 1s ease-in-out infinite}
-#vcbtn.ok{border-color:var(--accent);color:var(--accent)}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
-#vcmsg{text-align:center;font-size:13px;color:var(--muted);min-height:18px;flex-shrink:0}
 </style>
 </head>
 <body>
-<div id="ls"><div class="em">📖</div><div id="lmsg">טוען...</div></div>
-<button id="listbtn" onclick="openD()">☰</button>
 
+<!-- Loading -->
+<div id="ls"><div class="em">📖</div><div id="lmsg">טוען...</div></div>
+
+<!-- Blind screen -->
+<div id="blind">
+  <div id="blind-title">ידיעון בארות יצחק</div>
+  <div id="blind-seg">טוען...</div>
+  <div id="blind-pi">
+    <div class="bars"><span></span><span></span><span></span></div>
+    <span style="font-size:13px;color:var(--accent)">מקריא...</span>
+  </div>
+  <div id="blind-status"></div>
+  <button id="vcbtn" onclick="startListen()">🎙 דבר אלי</button>
+  <div id="vcmsg"></div>
+  <button id="detail-btn" onclick="showDetail()">פרטים נוספים</button>
+</div>
+
+<!-- Detail screen -->
+<button id="listbtn" onclick="openD()">☰</button>
 <div id="app">
+  <button id="back-blind" onclick="showBlind()">🎙 הפעלה קולית</button>
   <div id="hdr">
     <div id="issue-lbl">ידיעון</div>
     <div id="seg-lbl">טוען...</div>
@@ -418,24 +461,25 @@ html,body{height:100%;background:var(--bg);color:var(--text);
   </div>
   <div id="pbar"><div id="pfill"></div></div>
   <div id="ta"><div id="body"></div></div>
-  <div id="pi"><div class="bars"><span></span><span></span><span></span></div><span>מקריא...</span></div>
+  <div id="pi">
+    <div class="bars"><span></span><span></span><span></span></div>
+    <span>מקריא...</span>
+  </div>
   <div id="ctrl">
     <button class="btn nav" onclick="nav(-1)">
       <span class="ic">⟪</span><span class="lb">קודם</span>
     </button>
-    <button class="btn play" id="pb" onclick="toggle()">▶</button>
+    <button class="btn play" id="pb" onclick="toggle()">&#9654;</button>
     <button class="btn nav" onclick="nav(1)">
       <span class="ic">⟫</span><span class="lb">הבא</span>
     </button>
   </div>
   <div id="spd">
-    <button class="sb" onclick="spd(.8)">×0.8</button>
-    <button class="sb on" onclick="spd(1)">×1</button>
-    <button class="sb" onclick="spd(1.2)">×1.2</button>
-    <button class="sb" onclick="spd(1.5)">×1.5</button>
+    <button class="sb" onclick="spd(.6)">x0.6</button>
+    <button class="sb on" onclick="spd(1)">x1</button>
+    <button class="sb" onclick="spd(1.2)">x1.2</button>
+    <button class="sb" onclick="spd(1.5)">x1.5</button>
   </div>
-  <button id="vcbtn" onclick="startListen()">🎙 דבר אלי</button>
-  <div id="vcmsg"></div>
 </div>
 
 <div id="ov" onclick="closeD()"></div>
@@ -445,40 +489,85 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 </div>
 
 <script>
-let S=null,synth=window.speechSynthesis,utt=null,playing=false,rate=1,heVoice=null;
+var S=null,synth=window.speechSynthesis,utt=null,playing=false,rate=1,heVoice=null;
+var currentScreen='blind';
+
+// ── Voices ──────────────────────────────────────────────────────
 function initV(){
-  const vs=synth.getVoices();
-  heVoice=vs.find(v=>v.name==='Carmit')||vs.find(v=>v.lang==='he-IL')||
-           vs.find(v=>v.lang.startsWith('he'))||null;
+  var vs=synth.getVoices();
+  heVoice=vs.find(function(v){return v.name==='Carmit';})||
+          vs.find(function(v){return v.lang==='he-IL';})||
+          vs.find(function(v){return v.lang.startsWith('he');})||null;
 }
 if(synth.onvoiceschanged!==undefined)synth.onvoiceschanged=initV;
 initV();
 
-async function load(){
-  const r=await fetch('/api/current');
-  const d=await r.json();
-  if(d.no_issue){document.getElementById('lmsg').textContent='\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05de\u05d9\u05df';return;}
-  S=d;
-  document.getElementById('ls').setAttribute('style','display:none !important');
-  render(); renderD();
+// ── Screen switching ─────────────────────────────────────────────
+function showBlind(){
+  currentScreen='blind';
+  document.getElementById('blind').style.display='flex';
+  document.getElementById('app').classList.remove('vis');
+  document.getElementById('listbtn').classList.remove('vis');
+  updateBlindSeg();
 }
+function showDetail(){
+  currentScreen='detail';
+  document.getElementById('blind').style.display='none';
+  document.getElementById('app').classList.add('vis');
+  document.getElementById('listbtn').classList.add('vis');
+}
+
+// ── Load ─────────────────────────────────────────────────────────
+async function load(){
+  var r=await fetch('/api/current');
+  var d=await r.json();
+  document.getElementById('ls').style.display='none';
+  if(d.no_issue){
+    document.getElementById('blind').style.display='flex';
+    document.getElementById('blind-seg').textContent='אין ידיעון זמין';
+    return;
+  }
+  S=d;
+  render();
+  renderD();
+  showBlind();
+}
+
+// ── Render ───────────────────────────────────────────────────────
 function render(){
-  const seg=S.segments[S.current_position];
+  if(!S)return;
+  var seg=S.segments[S.current_position];
   document.getElementById('issue-lbl').textContent=S.issue_title;
   document.getElementById('seg-lbl').textContent=seg.title;
-  document.getElementById('pos-lbl').textContent='\u05e7\u05d8\u05e2 '+(S.current_position+1)+' \u05de\u05ea\u05d5\u05da '+S.total;
+  document.getElementById('pos-lbl').textContent=
+    '\u05e7\u05d8\u05e2 '+(S.current_position+1)+' \u05de\u05ea\u05d5\u05da '+S.total;
   document.getElementById('body').textContent=seg.body;
-  document.getElementById('pfill').style.width=((S.current_position+1)/S.total*100)+'%';
+  document.getElementById('pfill').style.width=
+    ((S.current_position+1)/S.total*100)+'%';
   document.getElementById('ta').scrollTop=0;
+  updateBlindSeg();
   renderD();
+}
+function updateBlindSeg(){
+  if(!S)return;
+  var seg=S.segments[S.current_position];
+  document.getElementById('blind-seg').textContent=
+    seg.title+' ('+(S.current_position+1)+'/'+S.total+')';
 }
 function renderD(){
   if(!S)return;
-  document.getElementById('segl').innerHTML=S.segments.map((s,i)=>'<div class="si '+(i===S.current_position?'cur':'')+'" onclick="jump('+i+')"><div class="n">'+(i+1)+'</div><div class="dot"></div><div class="nm">'+s.title+'</div></div>').join('');
+  document.getElementById('segl').innerHTML=S.segments.map(function(s,i){
+    return '<div class="si '+(i===S.current_position?'cur':'')+
+      '" onclick="jump('+i+')"><div class="n">'+(i+1)+
+      '</div><div class="dot"></div><div class="nm">'+s.title+'</div></div>';
+  }).join('');
 }
+
+// ── Playback ─────────────────────────────────────────────────────
+function jump(p){stop();S.current_position=p;savePos(p);render();closeD();}
 function nav(d){
   stop();
-  const n=S.current_position+d;
+  var n=S.current_position+d;
   if(n<0||n>=S.total)return;
   S.current_position=n;savePos(n);render();
 }
@@ -486,118 +575,240 @@ function toggle(){playing?pause():speak();}
 function speak(){
   if(!S)return;
   synth.cancel();
-  const seg=S.segments[S.current_position];
-  utt=new SpeechSynthesisUtterance(seg.title+'. '+seg.body);
+  var seg=S.segments[S.current_position];
+  var text=seg.title+'. '+seg.body;
+  // Android workaround: chunk long text
+  var isAndroid=/Android/i.test(navigator.userAgent);
+  if(isAndroid){speakAndroid(text);}
+  else{speakIOS(text);}
+}
+function speakIOS(text){
+  utt=new SpeechSynthesisUtterance(text);
   utt.lang='he-IL'; utt.rate=rate;
   if(heVoice)utt.voice=heVoice;
-  utt.onstart=()=>{playing=true;document.getElementById('pb').textContent='⏸';
-    document.getElementById('pb').classList.add('on');
-    document.getElementById('pi').classList.add('on')};
-  utt.onend=()=>{
-    setIdle();
-    if(S.current_position<S.total-1){
-      S.current_position++;savePos(S.current_position);render();speak();
-    }
-  };
+  utt.onstart=onSpeakStart;
+  utt.onend=onSpeakEnd;
   utt.onerror=setIdle;
   synth.speak(utt);
+}
+function speakAndroid(text){
+  // Android cuts off long utterances — split into sentences
+  var sentences=text.match(/[^.!?]+[.!?]+/g)||[text];
+  var idx=0;
+  function next(){
+    if(idx>=sentences.length){onSpeakEnd();return;}
+    utt=new SpeechSynthesisUtterance(sentences[idx++]);
+    utt.lang='he-IL'; utt.rate=rate;
+    if(heVoice)utt.voice=heVoice;
+    if(idx===1)utt.onstart=onSpeakStart;
+    utt.onend=next;
+    utt.onerror=setIdle;
+    synth.speak(utt);
+  }
+  next();
+}
+function onSpeakStart(){
+  playing=true;
+  document.getElementById('pb').innerHTML='&#9646;&#9646;';
+  document.getElementById('pb').classList.add('on');
+  document.getElementById('pi').classList.add('on');
+  document.getElementById('blind-pi').classList.add('on');
+  document.getElementById('blind-status').textContent='\u05de\u05e7\u05e8\u05d9\u05d0...';
+}
+function onSpeakEnd(){
+  setIdle();
+  if(S&&S.current_position<S.total-1){
+    S.current_position++;savePos(S.current_position);render();speak();
+  }
 }
 function pause(){synth.cancel();setIdle();}
 function stop(){synth.cancel();setIdle();}
 function setIdle(){
   playing=false;
-  document.getElementById('pb').textContent='▶';
+  document.getElementById('pb').innerHTML='&#9654;';
   document.getElementById('pb').classList.remove('on');
   document.getElementById('pi').classList.remove('on');
+  document.getElementById('blind-pi').classList.remove('on');
+  document.getElementById('blind-status').textContent='';
 }
 function spd(s){
   rate=s;
-  document.querySelectorAll('.sb').forEach(b=>b.classList.toggle('on',
-    parseFloat(b.textContent.replace('×',''))===s));
+  document.querySelectorAll('.sb').forEach(function(b){
+    b.classList.toggle('on',parseFloat(b.textContent.replace('x',''))===s);
+  });
+  // restart from beginning of segment
   if(playing){stop();speak();}
 }
+
+// ── Phone call interruption ──────────────────────────────────────
+document.addEventListener('visibilitychange',function(){
+  if(document.hidden&&playing){pause();}
+});
+
+// ── Save position ────────────────────────────────────────────────
 async function savePos(p){
   await fetch('/api/set_position',{method:'POST',
-    headers:{'Content-Type':'application/json'},body:JSON.stringify({position:p})});
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({position:p})});
 }
+
+// ── Drawer ───────────────────────────────────────────────────────
 function openD(){document.getElementById('drw').classList.add('o');
   document.getElementById('ov').classList.add('o');}
 function closeD(){document.getElementById('drw').classList.remove('o');
   document.getElementById('ov').classList.remove('o');}
 
-// ── Voice control ──────────────────────────────────────────────
-const SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition;
-let rec=null;
-function vcMsg(txt,ok){
-  const el=document.getElementById('vcmsg');
-  el.textContent=txt;
-  el.style.color=ok?'var(--accent)':'var(--muted)';
+// ── Audio feedback ───────────────────────────────────────────────
+var audioCtx=null;
+function getAudio(){
+  if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  return audioCtx;
 }
+function beep(freq,dur,vol){
+  try{
+    var ctx=getAudio();
+    var o=ctx.createOscillator();
+    var g=ctx.createGain();
+    o.connect(g);g.connect(ctx.destination);
+    o.frequency.value=freq;
+    g.gain.setValueAtTime(vol||0.3,ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+dur);
+    o.start(ctx.currentTime);
+    o.stop(ctx.currentTime+dur);
+  }catch(e){}
+}
+function sayHebrew(text){
+  var u=new SpeechSynthesisUtterance(text);
+  u.lang='he-IL'; u.rate=1.1;
+  if(heVoice)u.voice=heVoice;
+  synth.speak(u);
+}
+
+// ── Voice recognition ────────────────────────────────────────────
+var SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition;
+var rec=null;
+
+function vcMsg(txt,bright){
+  var el=document.getElementById('vcmsg');
+  el.textContent=txt;
+  el.style.color=bright?'var(--accent)':'var(--muted)';
+}
+
 function startListen(){
-  if(!SpeechRec){vcMsg('זיהוי קולי לא נתמך בדפדפן זה',false);return;}
+  if(!S){
+    sayHebrew('\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05de\u05d9\u05df');
+    return;
+  }
+  if(!SpeechRec){
+    sayHebrew('\u05d6\u05d9\u05d4\u05d5\u05d9 \u05e7\u05d5\u05dc\u05d9 \u05dc\u05d0 \u05e0\u05ea\u05de\u05da');
+    vcMsg('\u05d6\u05d9\u05d4\u05d5\u05d9 \u05e7\u05d5\u05dc\u05d9 \u05dc\u05d0 \u05e0\u05ea\u05de\u05da \u05d1\u05d3\u05e4\u05d3\u05e4\u05df \u05d6\u05d4',false);
+    return;
+  }
   if(rec){rec.abort();rec=null;}
+  // pause speech during listening
+  var wasPlaying=playing;
+  if(playing)synth.pause();
+
   rec=new SpeechRec();
   rec.lang='he-IL';
   rec.interimResults=false;
-  rec.maxAlternatives=5;
-  const btn=document.getElementById('vcbtn');
+  rec.maxAlternatives=6;
+
+  var btn=document.getElementById('vcbtn');
   btn.classList.add('listening');
-  btn.textContent='👂 מאזין...';
-  vcMsg('דבר עכשיו',false);
-  rec.onresult=(e)=>{
-    const alts=Array.from(e.results[0]).map(a=>a.transcript.trim());
-    console.log('heard:',alts);
-    const heard=alts.join(' ');
+  btn.textContent='\ud83d\udc42 \u05de\u05d0\u05d6\u05d9\u05df...';
+  vcMsg('',false);
+
+  // audio + voice cue
+  beep(880,0.12,0.25);
+  setTimeout(function(){sayHebrew('\u05d0\u05e0\u05d9 \u05de\u05e7\u05e9\u05d9\u05d1');},150);
+
+  // timeout beep if no result
+  var timeoutId=setTimeout(function(){
+    if(rec){rec.abort();}
+    beep(440,0.2,0.2);
+    vcMsg('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9 \u05e4\u05e7\u05d5\u05d3\u05d4',false);
+    if(wasPlaying)synth.resume();
+    resetVcBtn();
+  },8000);
+
+  rec.onresult=function(e){
+    clearTimeout(timeoutId);
+    var alts=Array.from(e.results[0]).map(function(a){return a.transcript.trim();});
+    var heard=alts.join(' ');
+    if(wasPlaying)synth.resume();
     handleCmd(heard);
   };
-  rec.onerror=(e)=>{
-    vcMsg('לא הצלחתי לשמוע — נסה שוב',false);
+  rec.onerror=function(){
+    clearTimeout(timeoutId);
+    beep(440,0.2,0.2);
+    vcMsg('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9 \u05d4\u05d9\u05d8\u05d1 \u2014 \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1',false);
+    if(wasPlaying)synth.resume();
     resetVcBtn();
   };
-  rec.onend=resetVcBtn;
+  rec.onend=function(){clearTimeout(timeoutId);resetVcBtn();};
   rec.start();
 }
+
 function resetVcBtn(){
-  const btn=document.getElementById('vcbtn');
+  var btn=document.getElementById('vcbtn');
   btn.classList.remove('listening');
   btn.classList.remove('ok');
-  btn.textContent='🎙 דבר אלי';
+  btn.textContent='\ud83c\udfa4 \u05d3\u05d1\u05e8 \u05d0\u05dc\u05d9';
   rec=null;
 }
+
 function handleCmd(heard){
-  const btn=document.getElementById('vcbtn');
+  var btn=document.getElementById('vcbtn');
   btn.classList.remove('listening');
-  // normalize
-  const h=heard.replace(/[.,!?]/g,'');
-  let done=false;
+  var h=heard.replace(/[.,!?]/g,'');
+  var done=false;
+  var label='';
+
+  if(/\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df/.test(h)){
+    // ignore stray "אין ידיעון" echo
+    resetVcBtn(); return;
+  }
   // play
-  if(/הפעל|התחל|המשך|קרא/.test(h)){speak();done=true;}
+  if(/\u05d4\u05e4\u05e2\u05dc|\u05d4\u05ea\u05d7\u05dc|\u05d4\u05de\u05e9\u05da|\u05e7\u05e8\u05d0/.test(h)){
+    speak();done=true;label='\u05d4\u05e4\u05e2\u05dc';}
   // pause/stop
-  else if(/עצור|השהה|פסק|הפסק/.test(h)){pause();done=true;}
+  else if(/\u05e2\u05e6\u05d5\u05e8|\u05d4\u05e9\u05d4\u05d4|\u05e4\u05e1\u05e7|\u05d4\u05e4\u05e1\u05e7/.test(h)){
+    pause();done=true;label='\u05e2\u05e6\u05d5\u05e8';}
   // next
-  else if(/הבא|קטע הבא|קדימה/.test(h)){nav(1);done=true;}
+  else if(/\u05d4\u05d1\u05d0|\u05e7\u05d8\u05e2 \u05d4\u05d1\u05d0|\u05e7\u05d3\u05d9\u05de\u05d4|\u05d0\u05d1\u05d0|\u05d3\u05dc\u05d2 \u05e7\u05d3\u05d9\u05de\u05d4/.test(h)){
+    nav(1);done=true;label='\u05e7\u05d8\u05e2 \u05d4\u05d1\u05d0';}
   // prev
-  else if(/קודם|קטע קודם|אחורה/.test(h)){nav(-1);done=true;}
-  // beginning of issue
-  else if(/התחלה|חזור|ראשון|גיליון/.test(h)){
-    stop();S.current_position=0;savePos(0);render();done=true;}
-  // speed
-  else if(/מהיר יותר|מהר יותר/.test(h)){
-    const speeds=[0.8,1,1.2,1.5];
-    const i=speeds.indexOf(rate);
-    if(i<speeds.length-1)spd(speeds[i+1]);done=true;}
-  else if(/איטי יותר|לאט יותר/.test(h)){
-    const speeds=[0.8,1,1.2,1.5];
-    const i=speeds.indexOf(rate);
-    if(i>0)spd(speeds[i-1]);done=true;}
+  else if(/\u05e7\u05d5\u05d3\u05dd|\u05e7\u05d8\u05e2 \u05e7\u05d5\u05d3\u05dd|\u05d0\u05d7\u05d5\u05e8\u05d4|\u05d3\u05dc\u05d2 \u05d0\u05d7\u05d5\u05e8\u05d4|\u05d7\u05d6\u05d5\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05e7\u05d5\u05d3\u05dd/.test(h)){
+    nav(-1);done=true;label='\u05e7\u05d8\u05e2 \u05e7\u05d5\u05d3\u05dd';}
+  // beginning
+  else if(/\u05d4\u05ea\u05d7\u05dc\u05d4|\u05e8\u05d0\u05e9\u05d5\u05df|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df/.test(h)){
+    stop();S.current_position=0;savePos(0);render();
+    done=true;label='\u05d7\u05d6\u05e8\u05d4 \u05dc\u05d4\u05ea\u05d7\u05dc\u05d4';}
+  // faster
+  else if(/\u05de\u05d4\u05d9\u05e8|\u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05d9\u05e8|\u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05e8/.test(h)){
+    var speeds=[0.6,1,1.2,1.5];
+    var idx=speeds.indexOf(rate);
+    if(idx<speeds.length-1)spd(speeds[idx+1]);
+    done=true;label='\u05de\u05d4\u05d9\u05e8 \u05d9\u05d5\u05ea\u05e8';}
+  // slower
+  else if(/\u05d0\u05d9\u05d8\u05d9|\u05dc\u05d0\u05d8|\u05d9\u05d5\u05ea\u05e8 \u05dc\u05d0\u05d8/.test(h)){
+    var speeds2=[0.6,1,1.2,1.5];
+    var idx2=speeds2.indexOf(rate);
+    if(idx2>0)spd(speeds2[idx2-1]);
+    done=true;label='\u05d0\u05d9\u05d8\u05d9 \u05d9\u05d5\u05ea\u05e8';}
 
   if(done){
     btn.classList.add('ok');
-    vcMsg('בוצע: '+heard,true);
-    setTimeout(()=>{btn.classList.remove('ok');vcMsg('',false);},2000);
+    beep(1046,0.15,0.2);
+    sayHebrew(label);
+    vcMsg('\u05d1\u05d5\u05e6\u05e2: '+label,true);
+    setTimeout(function(){btn.classList.remove('ok');vcMsg('',false);},2500);
   } else {
-    vcMsg('לא הבנתי: "'+heard+'"',false);
-    setTimeout(()=>vcMsg('',false),3000);
+    beep(330,0.3,0.2);
+    sayHebrew('\u05dc\u05d0 \u05d4\u05d1\u05e0\u05ea\u05d9');
+    vcMsg('\u05dc\u05d0 \u05d4\u05d1\u05e0\u05ea\u05d9: "'+heard+'"',false);
+    setTimeout(function(){vcMsg('',false);},3500);
   }
 }
 
