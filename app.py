@@ -525,9 +525,16 @@ async function load(){
   var r=await fetch('/api/current');
   var d=await r.json();
   document.getElementById('ls').style.display='none';
+  // Check TTS support
+  if(!window.speechSynthesis){
+    document.getElementById('blind').style.display='flex';
+    document.getElementById('blind-seg').textContent='\u05d4\u05d3\u05e4\u05d3\u05e4\u05df \u05dc\u05d0 \u05ea\u05d5\u05de\u05da \u05d1\u05d4\u05e7\u05e8\u05d0\u05d4 \u05e7\u05d5\u05dc\u05d9\u05ea';
+    document.getElementById('blind-status').textContent='\u05d0\u05e0\u05d0 \u05e4\u05ea\u05d7 \u05d1-Chrome';
+    return;
+  }
   if(d.no_issue){
     document.getElementById('blind').style.display='flex';
-    document.getElementById('blind-seg').textContent='אין ידיעון זמין';
+    document.getElementById('blind-seg').textContent='\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05de\u05d9\u05df';
     return;
   }
   S=d;
@@ -578,9 +585,10 @@ function toggle(){playing?pause():speak();}
 function speak(){
   if(!S)return;
   synth.cancel();
+  // Re-init voices — Android sometimes loads them late
+  initV();
   var seg=S.segments[S.current_position];
   var text=seg.title+'. '+seg.body;
-  // Android workaround: chunk long text
   var isAndroid=/Android/i.test(navigator.userAgent);
   if(isAndroid){speakAndroid(text);}
   else{speakIOS(text);}
@@ -595,18 +603,27 @@ function speakIOS(text){
   synth.speak(utt);
 }
 function speakAndroid(text){
-  // Android cuts off long utterances — split into sentences
-  var sentences=text.match(/[^.!?]+[.!?]+/g)||[text];
+  // Android: split to short chunks, resume if synth paused
+  if(synth.paused)synth.resume();
+  var chunks=[];
+  // split on sentence endings or every ~100 chars
+  var parts=text.match(/[^.!?\n]{1,120}[.!?\n]?/g)||[text];
+  parts.forEach(function(p){if(p.trim())chunks.push(p.trim());});
   var idx=0;
-  onSpeakStart(); // call immediately, don't wait for onstart event
+  onSpeakStart();
   function next(){
-    if(idx>=sentences.length){onSpeakEnd();return;}
-    utt=new SpeechSynthesisUtterance(sentences[idx++]);
-    utt.lang='he-IL'; utt.rate=rate;
-    if(heVoice)utt.voice=heVoice;
-    utt.onend=next;
-    utt.onerror=setIdle;
-    synth.speak(utt);
+    if(idx>=chunks.length){onSpeakEnd();return;}
+    var u=new SpeechSynthesisUtterance(chunks[idx++]);
+    u.lang='he-IL'; u.rate=rate;
+    if(heVoice)u.voice=heVoice;
+    u.onend=next;
+    u.onerror=function(e){
+      // on error try next chunk instead of stopping
+      console.log('TTS chunk error:',e.error);
+      next();
+    };
+    synth.speak(u);
+    utt=u;
   }
   next();
 }
