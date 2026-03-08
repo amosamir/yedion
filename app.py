@@ -722,15 +722,16 @@ initV();
 
 // ── Screen switching ─────────────────────────────────────────────
 function disableVoiceOver(){
-  // Request accessibility focus on a neutral element to suppress VoiceOver announcements
-  // The most reliable way: set aria-hidden on everything except our content
-  // and move focus away from anything VO would read
-  document.body.setAttribute('aria-hidden','false');
+  // We want VoiceOver to stay active for system UI (calls, etc.)
+  // but not auto-read our app content.
+  // Strategy: set aria-live="off" and remove focus traps.
+  // The vcbtn is the only interactive element VO should find.
   var btn=document.getElementById('vcbtn');
-  if(btn){btn.setAttribute('role','button');btn.setAttribute('aria-label','דבר אלי');}
-  // iOS: remove focus from any element VO might latch onto
-  if(document.activeElement&&document.activeElement!==btn){
-    document.activeElement.blur();
+  if(btn){
+    btn.setAttribute('aria-label','\u05d3\u05d1\u05e8 \u05d0\u05dc\u05d9'); // דבר אלי
+    btn.setAttribute('role','button');
+    // Move focus to button — VO will announce it once then be quiet
+    setTimeout(function(){btn.focus();},100);
   }
 }
 function showBlind(){
@@ -832,11 +833,18 @@ function speak(){
 
 function resume(){
   if(pausedText && pausedChar>0){
-    // Find a word boundary near pausedChar to resume cleanly
+    // Snap to word boundary, then go back 2 extra words for context
     var idx=pausedChar;
-    // Snap back to nearest space before idx
-    while(idx>0 && pausedText[idx]!=' ')idx--;
-    if(idx>0)idx++; // skip the space
+    if(idx>=pausedText.length) idx=pausedText.length-1;
+    // Find word boundary at or before idx
+    while(idx>0 && pausedText[idx]===' ')idx--;
+    while(idx>0 && pausedText[idx]!==' ')idx--;
+    // Go back 2 more words
+    for(var w=0;w<2;w++){
+      while(idx>0 && pausedText[idx]===' ')idx--;
+      while(idx>0 && pausedText[idx]!==' ')idx--;
+    }
+    if(idx>0)idx++; // skip leading space
     var remaining=pausedText.slice(idx);
     synth.cancel();
     _doSpeak(remaining, idx);
@@ -939,10 +947,33 @@ function spd(s){
   if(playing){stop();speak();}
 }
 
-// ── Phone call interruption ──────────────────────────────────────
+// ── Phone call / background handling ────────────────────────────
+var pausedForCall=false;
 document.addEventListener('visibilitychange',function(){
-  if(document.hidden&&playing){pause();}
+  if(document.hidden){
+    if(playing){pause(); pausedForCall=true;}
+    // When app goes to background, iOS restores VoiceOver for system UI automatically
+  } else {
+    // Returned to foreground
+    if(pausedForCall){
+      pausedForCall=false;
+      // Show a prominent "resume" prompt on blind screen
+      showResumePrompt();
+    }
+  }
 });
+
+function showResumePrompt(){
+  if(currentScreen!=='blind')return;
+  var st=document.getElementById('blind-status');
+  st.textContent='\u05dc\u05d7\u05e5 \u05dc\u05d4\u05de\u05e9\u05da \u05d0\u05d5 \u05d0\u05de\u05d5\u05e8 \u05d4\u05de\u05e9\u05da'; // לחץ להמשך או אמור המשך
+  st.style.color='#2d5f3f';
+  st.style.fontWeight='700';
+  // Auto-clear after 8 seconds
+  setTimeout(function(){
+    if(!playing){st.textContent='';st.style.color='';st.style.fontWeight='';}
+  },8000);
+}
 
 // ── Save position ────────────────────────────────────────────────
 async function savePos(p){
@@ -1072,7 +1103,6 @@ function handleCmd(heard, wasPlaying){
     done=true; label='\u05e1\u05d9\u05d5\u05dd'; noEcho=true;
     beep(1046,0.15,0.2);
     pause();
-    document.body.removeAttribute('aria-hidden');
     setTimeout(function(){window.close();},400);
   }
   // ── הפעל / המשך / קרא — resume from paused position if available
