@@ -521,34 +521,42 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 #ls .em{font-size:52px}
 
 /* ── BLIND SCREEN ── */
-#blind{position:fixed;inset:0;background:var(--bg);display:none;
-  flex-direction:column;align-items:center;justify-content:center;
-  gap:28px;padding:32px;z-index:10}
-#blind-title{font-size:15px;color:var(--accent);font-weight:700;
+#blind{position:fixed;inset:0;background:#f5f2ec;display:none;
+  flex-direction:column;align-items:center;justify-content:space-between;
+  padding:env(safe-area-inset-top, 20px) 20px env(safe-area-inset-bottom, 20px);
+  z-index:10}
+#blind-top{display:flex;flex-direction:column;align-items:center;gap:6px;
+  padding-top:12px;width:100%}
+#blind-title{font-size:14px;color:#888;font-weight:700;
   letter-spacing:.08em;text-align:center}
-#blind-seg{font-size:22px;font-weight:900;text-align:center;
-  line-height:1.3;color:var(--text)}
-#blind-status{font-size:16px;color:var(--muted);text-align:center;
-  min-height:24px}
-#vcbtn{width:100%;max-width:340px;padding:40px 20px;
-  background:var(--surface2);border:3px solid var(--border);
-  border-radius:32px;color:var(--text);font-family:'Heebo',sans-serif;
-  font-size:26px;font-weight:900;cursor:pointer;transition:all .2s;
-  -webkit-user-select:none;user-select:none}
-#vcbtn:active{transform:scale(.96)}
-#vcbtn.listening{background:#2a1010;border-color:#e87a7a;color:#e87a7a;
-  animation:pulse 1s ease-in-out infinite}
-#vcbtn.ok{border-color:var(--accent);color:var(--accent)}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
-#vcmsg{font-size:15px;color:var(--muted);text-align:center;min-height:22px}
-#detail-btn{padding:16px 36px;background:transparent;
-  border:1px solid var(--border);border-radius:99px;
-  color:var(--muted);font-family:'Heebo',sans-serif;
-  font-size:16px;font-weight:700;cursor:pointer;transition:all .2s}
-#detail-btn:active{background:var(--surface2)}
+#blind-seg{font-size:20px;font-weight:900;text-align:center;
+  line-height:1.3;color:#1a1a18}
 #blind-pi{display:flex;align-items:center;justify-content:center;
   gap:8px;height:20px;opacity:0;transition:opacity .3s}
 #blind-pi.on{opacity:1}
+#blind-pi .bars span{background:#2d5f3f}
+#blind-status{font-size:15px;color:#666;text-align:center;
+  min-height:22px}
+#vcbtn{flex:1;width:100%;max-width:100%;
+  background:#2d5f3f;border:none;
+  border-radius:28px;color:#fff;font-family:'Heebo',sans-serif;
+  font-size:36px;font-weight:900;cursor:pointer;transition:all .2s;
+  -webkit-user-select:none;user-select:none;
+  display:flex;align-items:center;justify-content:center;
+  margin:16px 0}
+#vcbtn:active{transform:scale(.97);opacity:.9}
+#vcbtn.listening{background:#c0392b;
+  animation:pulse 1s ease-in-out infinite}
+#vcbtn.ok{background:#1a7a40}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+#vcmsg{font-size:14px;color:#666;text-align:center;min-height:20px}
+#blind-bottom{display:flex;flex-direction:column;align-items:center;
+  gap:10px;width:100%;padding-bottom:8px}
+#detail-btn{padding:14px 36px;background:transparent;
+  border:2px solid #ccc;border-radius:99px;
+  color:#888;font-family:'Heebo',sans-serif;
+  font-size:16px;font-weight:700;cursor:pointer;transition:all .2s;width:100%}
+#detail-btn:active{background:#e8e4dc}
 
 /* ── DETAIL SCREEN ── */
 #app{display:none;flex-direction:column;height:100dvh;max-width:520px;
@@ -644,16 +652,20 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 
 <!-- Blind screen -->
 <div id="blind">
-  <div id="blind-title">ידיעון בארות יצחק</div>
-  <div id="blind-seg">טוען...</div>
-  <div id="blind-pi">
-    <div class="bars"><span></span><span></span><span></span></div>
-    <span style="font-size:13px;color:var(--accent)">מקריא...</span>
+  <div id="blind-top">
+    <div id="blind-title">ידיעון בארות יצחק</div>
+    <div id="blind-seg">טוען...</div>
+    <div id="blind-pi">
+      <div class="bars"><span></span><span></span><span></span></div>
+      <span style="font-size:13px;color:#2d5f3f">מקריא...</span>
+    </div>
+    <div id="blind-status"></div>
   </div>
-  <div id="blind-status"></div>
-  <button id="vcbtn" onclick="startListen()">🎙 דבר אלי</button>
-  <div id="vcmsg"></div>
-  <button id="detail-btn" onclick="showDetail()">פרטים נוספים</button>
+  <button id="vcbtn" onclick="startListen()">דבר אלי</button>
+  <div id="blind-bottom">
+    <div id="vcmsg"></div>
+    <button id="detail-btn" onclick="showDetail()">פרטים נוספים</button>
+  </div>
 </div>
 
 <!-- Detail screen -->
@@ -709,11 +721,24 @@ if(synth.onvoiceschanged!==undefined)synth.onvoiceschanged=initV;
 initV();
 
 // ── Screen switching ─────────────────────────────────────────────
+function disableVoiceOver(){
+  // Request accessibility focus on a neutral element to suppress VoiceOver announcements
+  // The most reliable way: set aria-hidden on everything except our content
+  // and move focus away from anything VO would read
+  document.body.setAttribute('aria-hidden','false');
+  var btn=document.getElementById('vcbtn');
+  if(btn){btn.setAttribute('role','button');btn.setAttribute('aria-label','דבר אלי');}
+  // iOS: remove focus from any element VO might latch onto
+  if(document.activeElement&&document.activeElement!==btn){
+    document.activeElement.blur();
+  }
+}
 function showBlind(){
   currentScreen='blind';
   document.getElementById('blind').style.display='flex';
   document.getElementById('app').classList.remove('vis');
   document.getElementById('listbtn').classList.remove('vis');
+  disableVoiceOver();
   updateBlindSeg();
 }
 function showDetail(){
@@ -772,10 +797,34 @@ function renderD(){
 // ── Playback ─────────────────────────────────────────────────────
 function jump(p){stop();S.current_position=p;savePos(p);render();closeD();}
 function nav(d){
-  stop();
+  var wasPlaying=playing;
+  pause();
   var n=S.current_position+d;
   if(n<0||n>=S.total)return;
   S.current_position=n;savePos(n);render();
+  if(wasPlaying){
+    speak();
+  } else {
+    // Say the title of the new segment
+    var seg=S.segments[S.current_position];
+    sayHebrew(seg.title);
+  }
+}
+function toggle(){playing?pause():speak();}
+function speak(){
+  if(!S)return;
+  synth.cancel();
+  var seg=S.segments[S.current_position];
+  var text=seg.title+'. '+seg.body;
+  // Android workaround: chunk long text
+  var isAndroid=/Android/i.test(navigator.userAgent);
+  if(isAndroid){speakAndroid(text);}
+  else{speakIOS(text);}
+}
+function speakTitle(){
+  if(!S)return;
+  var seg=S.segments[S.current_position];
+  sayHebrew(seg.title);
 }
 function toggle(){playing?pause():speak();}
 function speak(){
@@ -827,7 +876,9 @@ function onSpeakEnd(){
     S.current_position++;savePos(S.current_position);render();speak();
   }
 }
-function pause(){synth.cancel();setIdle();}
+function pause(){
+  if(playing){synth.cancel();setIdle();}
+}
 function stop(){synth.cancel();setIdle();}
 function setIdle(){
   playing=false;
@@ -970,51 +1021,76 @@ function handleCmd(heard){
   var h=heard.replace(/[.,!?]/g,'');
   var done=false;
   var label='';
+  var noEcho=false; // if true, action speaks for itself — no sayHebrew(label)
 
   if(/\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df/.test(h)){
-    // ignore stray "אין ידיעון" echo
     resetVcBtn(); return;
   }
-  // play
-  if(/\u05d4\u05e4\u05e2\u05dc|\u05d4\u05ea\u05d7\u05dc|\u05d4\u05de\u05e9\u05da|\u05e7\u05e8\u05d0/.test(h)){
-    speak();done=true;label='\u05d4\u05e4\u05e2\u05dc';}
-  // pause/stop
+
+  // ── סיום — restore VoiceOver and close
+  if(/\u05e1\u05d9\u05d5\u05dd/.test(h)){
+    done=true; label='\u05e1\u05d9\u05d5\u05dd'; noEcho=true;
+    beep(1046,0.15,0.2);
+    pause();
+    // Re-enable VoiceOver by removing aria-hidden, then close/go home
+    document.body.removeAttribute('aria-hidden');
+    setTimeout(function(){window.close();},400);
+  }
+  // ── הפעל / המשך / קרא — start speaking immediately, no echo
+  else if(/\u05d4\u05e4\u05e2\u05dc|\u05d4\u05ea\u05d7\u05dc|\u05d4\u05de\u05e9\u05da|\u05e7\u05e8\u05d0|\u05e7\u05e8\u05d9\u05d0\u05d4/.test(h)){
+    done=true; label='\u05de\u05ea\u05d7\u05d9\u05dc'; noEcho=true;
+    speak();
+  }
+  // ── עצור / השהה / פסק — pause
   else if(/\u05e2\u05e6\u05d5\u05e8|\u05d4\u05e9\u05d4\u05d4|\u05e4\u05e1\u05e7|\u05d4\u05e4\u05e1\u05e7/.test(h)){
-    pause();done=true;label='\u05e2\u05e6\u05d5\u05e8';}
-  // next
+    pause(); done=true; label='\u05e2\u05e6\u05d5\u05e8';
+  }
+  // ── קדימה / הבא
   else if(/\u05d4\u05d1\u05d0|\u05e7\u05d8\u05e2 \u05d4\u05d1\u05d0|\u05e7\u05d3\u05d9\u05de\u05d4|\u05d0\u05d1\u05d0|\u05d3\u05dc\u05d2 \u05e7\u05d3\u05d9\u05de\u05d4/.test(h)){
-    nav(1);done=true;label='\u05e7\u05d8\u05e2 \u05d4\u05d1\u05d0';}
-  // prev
+    done=true; label='\u05e7\u05d8\u05e2 \u05d4\u05d1\u05d0'; noEcho=true;
+    nav(1);
+  }
+  // ── אחורה / קודם
   else if(/\u05e7\u05d5\u05d3\u05dd|\u05e7\u05d8\u05e2 \u05e7\u05d5\u05d3\u05dd|\u05d0\u05d7\u05d5\u05e8\u05d4|\u05d3\u05dc\u05d2 \u05d0\u05d7\u05d5\u05e8\u05d4|\u05d7\u05d6\u05d5\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05e7\u05d5\u05d3\u05dd/.test(h)){
-    nav(-1);done=true;label='\u05e7\u05d8\u05e2 \u05e7\u05d5\u05d3\u05dd';}
-  // beginning
-  else if(/\u05d4\u05ea\u05d7\u05dc\u05d4|\u05e8\u05d0\u05e9\u05d5\u05df|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df/.test(h)){
-    stop();S.current_position=0;savePos(0);render();
-    done=true;label='\u05d7\u05d6\u05e8\u05d4 \u05dc\u05d4\u05ea\u05d7\u05dc\u05d4';}
-  // faster
+    done=true; label='\u05e7\u05d8\u05e2 \u05e7\u05d5\u05d3\u05dd'; noEcho=true;
+    nav(-1);
+  }
+  // ── חזור לתחילת הקטע
+  else if(/\u05d7\u05d6\u05d5\u05e8 \u05dc\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05e7\u05d8\u05e2|\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05e7\u05d8\u05e2|\u05de\u05d4\u05ea\u05d7\u05dc\u05d4/.test(h)){
+    done=true; label='\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05e7\u05d8\u05e2'; noEcho=true;
+    stop(); render(); speak();
+  }
+  // ── עבור לתחילת הידיעון
+  else if(/\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05d9\u05d3\u05d9\u05e2\u05d5\u05df|\u05e8\u05d0\u05e9\u05d5\u05df|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df/.test(h)){
+    done=true; label='\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05d9\u05d3\u05d9\u05e2\u05d5\u05df'; noEcho=true;
+    stop(); S.current_position=0; savePos(0); render(); speak();
+  }
+  // ── מהיר
   else if(/\u05de\u05d4\u05d9\u05e8|\u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05d9\u05e8|\u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05e8/.test(h)){
     var speeds=[0.6,1,1.2,1.5];
     var idx=speeds.indexOf(rate);
     if(idx<speeds.length-1)spd(speeds[idx+1]);
-    done=true;label='\u05de\u05d4\u05d9\u05e8 \u05d9\u05d5\u05ea\u05e8';}
-  // slower
+    done=true; label='\u05de\u05d4\u05d9\u05e8 \u05d9\u05d5\u05ea\u05e8';
+  }
+  // ── איטי
   else if(/\u05d0\u05d9\u05d8\u05d9|\u05dc\u05d0\u05d8|\u05d9\u05d5\u05ea\u05e8 \u05dc\u05d0\u05d8/.test(h)){
     var speeds2=[0.6,1,1.2,1.5];
     var idx2=speeds2.indexOf(rate);
     if(idx2>0)spd(speeds2[idx2-1]);
-    done=true;label='\u05d0\u05d9\u05d8\u05d9 \u05d9\u05d5\u05ea\u05e8';}
+    done=true; label='\u05d0\u05d9\u05d8\u05d9 \u05d9\u05d5\u05ea\u05e8';
+  }
 
   if(done){
     btn.classList.add('ok');
     beep(1046,0.15,0.2);
-    sayHebrew(label);
+    if(!noEcho) sayHebrew(label);
     vcMsg('\u05d1\u05d5\u05e6\u05e2: '+label,true);
-    setTimeout(function(){btn.classList.remove('ok');vcMsg('',false);},2500);
+    setTimeout(function(){btn.classList.remove('ok');vcMsg('',false);resetVcBtn();},2000);
   } else {
     beep(330,0.3,0.2);
     sayHebrew('\u05dc\u05d0 \u05d4\u05d1\u05e0\u05ea\u05d9');
     vcMsg('\u05dc\u05d0 \u05d4\u05d1\u05e0\u05ea\u05d9: "'+heard+'"',false);
-    setTimeout(function(){vcMsg('',false);},3500);
+    setTimeout(function(){vcMsg('',false);resetVcBtn();},3500);
   }
 }
 
