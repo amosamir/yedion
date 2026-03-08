@@ -1059,7 +1059,7 @@ function startListen(){
   vcMsg('',false);
 
   beep(880,0.12,0.25);
-  setTimeout(function(){sayHebrew('\u05d0\u05e0\u05d9 \u05de\u05e7\u05e9\u05d9\u05d1');},150);
+  // No TTS cue — it gets transcribed and confuses the recognizer
 
   var handled=false;
   var silenceTimer=null;
@@ -1127,13 +1127,16 @@ function startIssuePicker(wasPlaying){
   issuePickerActive=true;
   issuePickerWasPlaying=wasPlaying;
   pause();
-  // Ask user which issue
-  setTimeout(function(){
-    sayHebrew('\u05dc\u05d0\u05d9\u05d6\u05d4 \u05e7\u05d5\u05d1\u05e5 \u05dc\u05e2\u05d1\u05d5\u05e8?'); // לאיזה קובץ לעבור?
+  // Ask user which issue, then start listening immediately when TTS ends
+  var q=new SpeechSynthesisUtterance('\u05dc\u05d0\u05d9\u05d6\u05d4 \u05e7\u05d5\u05d1\u05e5 \u05dc\u05e2\u05d1\u05d5\u05e8?');
+  q.lang='he-IL'; q.rate=rate;
+  if(heVoice)q.voice=heVoice;
+  q.onend=function(){
     vcMsg('\u05d0\u05de\u05d5\u05e8: \u05d4\u05e7\u05d5\u05d3\u05dd / \u05d4\u05d1\u05d0 / \u05d4\u05d0\u05d7\u05e8\u05d5\u05df / \u05e4\u05e8\u05e9\u05ea... / \u05d2\u05d9\u05dc\u05d9\u05d5\u05df...',false);
-  },300);
-  // Start listening for answer after TTS finishes (~2.5s)
-  setTimeout(function(){listenForIssue();},2800);
+    beep(880,0.12,0.25);
+    setTimeout(listenForIssue, 150);
+  };
+  synth.speak(q);
 }
 
 function listenForIssue(){
