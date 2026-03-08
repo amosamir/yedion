@@ -572,6 +572,13 @@ html,body{height:100%;background:var(--bg);color:var(--text);
   cursor:pointer;flex-shrink:0;text-align:center;
   transition:opacity .2s;-webkit-user-select:none;user-select:none}
 #back-blind:active{opacity:.85}
+#switch-issue-btn{width:100%;padding:10px 20px;
+  background:transparent;color:var(--muted);
+  border:1px solid var(--border);border-radius:var(--r);
+  font-family:'Heebo',sans-serif;font-size:15px;font-weight:700;
+  cursor:pointer;flex-shrink:0;text-align:center;
+  transition:opacity .2s;-webkit-user-select:none;user-select:none}
+#switch-issue-btn:active{opacity:.7}
 
 #hdr{display:flex;flex-direction:column;gap:3px}
 #issue-lbl{font-size:11px;color:var(--accent);font-weight:700;
@@ -672,6 +679,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 <button id="listbtn" onclick="openD()">☰</button>
 <div id="app">
   <button id="back-blind" onclick="showBlind()">🎙 הפעלה קולית</button>
+  <button id="switch-issue-btn" onclick="startIssuePicker(false)">⇄ החלף ידיעון</button>
   <div id="hdr">
     <div id="issue-lbl">ידיעון</div>
     <div id="seg-lbl">טוען...</div>
@@ -802,8 +810,9 @@ var pausedText=null;   // full text of current utterance
 var pausedChar=0;      // estimated char offset when paused
 var speakStartTime=0;  // Date.now() when speech started
 var speakStartChar=0;  // char offset we started from (for resume from middle)
-// Average Hebrew speech chars per second at rate=1 (empirical ~10-12 chars/sec)
-var CHARS_PER_SEC=11;
+// Average Hebrew speech chars per second at rate=1.
+// Set conservatively low so resume goes back rather than forward.
+var CHARS_PER_SEC=7;
 
 function jump(p){stop();S.current_position=p;savePos(p);render();closeD();}
 
@@ -1041,7 +1050,7 @@ function startListen(){
 
   rec=new SpeechRec();
   rec.lang='he-IL';
-  rec.interimResults=false;
+  rec.interimResults=true;   // get interim results for faster response
   rec.maxAlternatives=6;
 
   var btn=document.getElementById('vcbtn');
@@ -1052,29 +1061,53 @@ function startListen(){
   beep(880,0.12,0.25);
   setTimeout(function(){sayHebrew('\u05d0\u05e0\u05d9 \u05de\u05e7\u05e9\u05d9\u05d1');},150);
 
+  var handled=false;
+  var silenceTimer=null;
+
+  function finalize(heard){
+    if(handled)return;
+    handled=true;
+    clearTimeout(timeoutId);
+    clearTimeout(silenceTimer);
+    if(rec){rec.abort(); rec=null;}
+    handleCmd(heard, wasPlaying);
+  }
+
   var timeoutId=setTimeout(function(){
-    if(rec){rec.abort();}
-    beep(440,0.2,0.2);
-    vcMsg('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9 \u05e4\u05e7\u05d5\u05d3\u05d4',false);
-    // Timeout — resume playing if was playing before
-    if(wasPlaying) resume();
-    resetVcBtn();
+    if(!handled){
+      handled=true;
+      if(rec){rec.abort();}
+      beep(440,0.2,0.2);
+      vcMsg('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9 \u05e4\u05e7\u05d5\u05d3\u05d4',false);
+      if(wasPlaying) resume();
+      resetVcBtn();
+    }
   },8000);
 
   rec.onresult=function(e){
-    clearTimeout(timeoutId);
-    var alts=Array.from(e.results[0]).map(function(a){return a.transcript.trim();});
+    // Get best transcript so far
+    var result=e.results[e.results.length-1];
+    var alts=Array.from(result).map(function(a){return a.transcript.trim();});
     var heard=alts.join(' ');
-    handleCmd(heard, wasPlaying);
+
+    if(result.isFinal){
+      finalize(heard);
+    } else {
+      // Interim: reset silence timer — if 1.5s of silence after speech, finalize
+      clearTimeout(silenceTimer);
+      silenceTimer=setTimeout(function(){finalize(heard);},1500);
+    }
   };
   rec.onerror=function(){
-    clearTimeout(timeoutId);
+    if(handled)return;
+    handled=true;
+    clearTimeout(timeoutId); clearTimeout(silenceTimer);
     beep(440,0.2,0.2);
     vcMsg('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9 \u05d4\u05d9\u05d8\u05d1 \u2014 \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1',false);
     if(wasPlaying) resume();
     resetVcBtn();
   };
-  rec.onend=function(){clearTimeout(timeoutId);resetVcBtn();};
+  rec.onend=function(){clearTimeout(timeoutId);clearTimeout(silenceTimer);resetVcBtn();};
   rec.start();
 }
 
@@ -1086,10 +1119,129 @@ function resetVcBtn(){
   rec=null;
 }
 
+// ── Issue picker via voice ────────────────────────────────────────
+var issuePickerActive=false;
+var issuePickerWasPlaying=false;
+
+function startIssuePicker(wasPlaying){
+  issuePickerActive=true;
+  issuePickerWasPlaying=wasPlaying;
+  pause();
+  // Ask user which issue
+  setTimeout(function(){
+    sayHebrew('\u05dc\u05d0\u05d9\u05d6\u05d4 \u05e7\u05d5\u05d1\u05e5 \u05dc\u05e2\u05d1\u05d5\u05e8?'); // לאיזה קובץ לעבור?
+    vcMsg('\u05d0\u05de\u05d5\u05e8: \u05d4\u05e7\u05d5\u05d3\u05dd / \u05d4\u05d1\u05d0 / \u05d4\u05d0\u05d7\u05e8\u05d5\u05df / \u05e4\u05e8\u05e9\u05ea... / \u05d2\u05d9\u05dc\u05d9\u05d5\u05df...',false);
+  },300);
+  // Start listening for answer after TTS finishes (~2.5s)
+  setTimeout(function(){listenForIssue();},2800);
+}
+
+function listenForIssue(){
+  if(!SpeechRec){issuePickerActive=false;return;}
+  if(rec){rec.abort();rec=null;}
+  var btn=document.getElementById('vcbtn');
+  btn.classList.add('listening');
+  btn.textContent='\u05de\u05d0\u05d6\u05d9\u05df...';
+
+  rec=new SpeechRec();
+  rec.lang='he-IL';
+  rec.interimResults=false;
+  rec.maxAlternatives=6;
+
+  var handled=false;
+  var tid=setTimeout(function(){
+    if(!handled){handled=true;if(rec)rec.abort();
+      sayHebrew('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9');
+      issuePickerActive=false; resetVcBtn(); vcMsg('',false);}
+  },7000);
+
+  rec.onresult=function(e){
+    if(handled)return; handled=true;
+    clearTimeout(tid);
+    var alts=Array.from(e.results[0]).map(function(a){return a.transcript.trim();});
+    var heard=alts.join(' ');
+    rec=null; resetVcBtn();
+    handleIssueChoice(heard);
+  };
+  rec.onerror=function(){
+    if(handled)return; handled=true; clearTimeout(tid);
+    issuePickerActive=false; resetVcBtn(); vcMsg('',false);
+  };
+  rec.onend=function(){clearTimeout(tid); resetVcBtn();};
+  rec.start();
+}
+
+async function handleIssueChoice(heard){
+  var h=heard.replace(/[.,!?״׳]/g,'').trim();
+  issuePickerActive=false;
+  vcMsg('',false);
+
+  // Fetch all issues sorted newest first (id DESC)
+  var resp=await fetch('/api/issues');
+  var issues=await resp.json(); // [{id, title, ...}]
+  if(!issues||!issues.length){sayHebrew('\u05d0\u05d9\u05df \u05e7\u05d1\u05e6\u05d9\u05dd');return;}
+
+  // Find current issue index
+  var curId=S?S.issue_id:null;
+  var curIdx=issues.findIndex(function(iss){return iss.id===curId;});
+
+  var targetIssue=null;
+
+  // "הקודם" / "הגיליון הקודם" etc — older = higher index in DESC list
+  if(/\u05e7\u05d5\u05d3\u05dd|\u05e7\u05d5\u05d3\u05de/.test(h)){
+    var ni=curIdx+1;
+    if(ni<issues.length)targetIssue=issues[ni];
+    else{sayHebrew('\u05d0\u05d9\u05df \u05d2\u05d9\u05dc\u05d9\u05d5\u05df \u05e7\u05d5\u05d3\u05dd');return;}
+  }
+  // "הבא" / "הגיליון הבא" — newer = lower index
+  else if(/\u05d4\u05d1\u05d0|\u05d1\u05d0\u05d4/.test(h)){
+    var ni2=curIdx-1;
+    if(ni2>=0)targetIssue=issues[ni2];
+    else{sayHebrew('\u05d0\u05d9\u05df \u05d2\u05d9\u05dc\u05d9\u05d5\u05df \u05d7\u05d3\u05e9 \u05d9\u05d5\u05ea\u05e8');return;}
+  }
+  // "האחרון" / "הקובץ האחרון" — oldest = last in DESC list
+  else if(/\u05d0\u05d7\u05e8\u05d5\u05df|\u05d0\u05d7\u05e8\u05d5\u05e0/.test(h)){
+    targetIssue=issues[issues.length-1];
+  }
+  // "גיליון מספר 3647" or "גיליון 3647"
+  else if(/\u05d2\u05d9\u05dc\u05d9\u05d5\u05df/.test(h)){
+    var numMatch=h.match(/(\d{3,5})/);
+    if(numMatch){
+      var num=parseInt(numMatch[1]);
+      targetIssue=issues.find(function(iss){return iss.title.indexOf(String(num))>=0;});
+    }
+    if(!targetIssue){sayHebrew('\u05dc\u05d0 \u05de\u05e6\u05d0\u05ea\u05d9 \u05d0\u05ea \u05d4\u05d2\u05d9\u05dc\u05d9\u05d5\u05df');return;}
+  }
+  // "פרשת X" or parasha name
+  else {
+    // Search by parasha name in issue title
+    var best=null;
+    issues.forEach(function(iss){
+      if(iss.title && iss.title.indexOf && h.split(' ').some(function(w){
+        return w.length>2 && iss.title.indexOf(w)>=0;
+      })) best=iss;
+    });
+    if(best){targetIssue=best;}
+    else{sayHebrew('\u05dc\u05d0 \u05d4\u05d1\u05e0\u05ea\u05d9');return;}
+  }
+
+  if(!targetIssue){sayHebrew('\u05dc\u05d0 \u05de\u05e6\u05d0\u05ea\u05d9');return;}
+  if(targetIssue.id===curId){sayHebrew('\u05d6\u05d4 \u05db\u05d1\u05e8 \u05d4\u05e7\u05d5\u05d1\u05e5 \u05d4\u05e4\u05e2\u05d9\u05dc');return;}
+
+  // Activate the issue
+  await fetch('/api/set_issue',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({issue_id:targetIssue.id})});
+  // Reload state
+  await load();
+  sayHebrew('\u05e2\u05d5\u05d1\u05e8 \u05dc: '+targetIssue.title);
+  if(issuePickerWasPlaying) setTimeout(speak,2000);
+}
+
 function handleCmd(heard, wasPlaying){
   var btn=document.getElementById('vcbtn');
   btn.classList.remove('listening');
-  var h=heard.replace(/[.,!?]/g,'');
+  var h=heard.replace(/[.,!?״׳]/g,'').trim();
   var done=false;
   var label='';
   var noEcho=false;
@@ -1105,10 +1257,20 @@ function handleCmd(heard, wasPlaying){
     pause();
     setTimeout(function(){window.close();},400);
   }
-  // ── הפעל / המשך / קרא — resume from paused position if available
-  else if(/\u05d4\u05e4\u05e2\u05dc|\u05d4\u05ea\u05d7\u05dc|\u05d4\u05de\u05e9\u05da|\u05e7\u05e8\u05d0|\u05e7\u05e8\u05d9\u05d0\u05d4/.test(h)){
-    done=true; label='\u05de\u05ea\u05d7\u05d9\u05dc'; noEcho=true;
-    resume();  // continues from pause position if one exists
+  // ── החלף קובץ / גיליון / ידיעון — enter issue-switch mode
+  else if(/\u05d4\u05d7\u05dc\u05e3|\u05e9\u05e0\u05d4 (\u05e7\u05d5\u05d1\u05e5|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df|\u05d9\u05d3\u05d9\u05e2\u05d5\u05df)/.test(h)){
+    done=true; label='\u05d4\u05d7\u05dc\u05e3 \u05e7\u05d5\u05d1\u05e5'; noEcho=true;
+    startIssuePicker(wasPlaying);
+  }
+  // ── הפעל / קרא — fresh start (not resume)
+  else if(/^\u05d4\u05e4\u05e2\u05dc$|^\u05e7\u05e8\u05d0$|^\u05e7\u05e8\u05d9\u05d0\u05d4$|\u05d4\u05ea\u05d7\u05dc \u05dc\u05e7\u05e8\u05d5\u05d0/.test(h)){
+    done=true; label='\u05d4\u05e4\u05e2\u05dc'; noEcho=true;
+    speak();
+  }
+  // ── המשך / תמשיך — resume from pause position
+  else if(/^(\u05d4\u05de\u05e9\u05da|\u05ea\u05de\u05e9\u05d9\u05da|\u05d4\u05de\u05e9\u05da \u05d1\u05d1\u05e7\u05e9\u05d4|\u05d4\u05de\u05e9\u05da \u05dc\u05e7\u05e8\u05d5\u05d0)$/.test(h)){
+    done=true; label='\u05de\u05de\u05e9\u05d9\u05da'; noEcho=true;
+    resume();
   }
   // ── עצור / השהה
   else if(/\u05e2\u05e6\u05d5\u05e8|\u05d4\u05e9\u05d4\u05d4|\u05e4\u05e1\u05e7|\u05d4\u05e4\u05e1\u05e7/.test(h)){
