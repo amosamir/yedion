@@ -795,8 +795,14 @@ function renderD(){
 }
 
 // ── Playback ─────────────────────────────────────────────────────
-var pausedText=null;   // text that was paused mid-way
-var pausedChar=0;      // char offset where we paused
+// Pause/resume: Web Speech API has no real pause.
+// We estimate char position from elapsed time * rate * chars-per-second.
+var pausedText=null;   // full text of current utterance
+var pausedChar=0;      // estimated char offset when paused
+var speakStartTime=0;  // Date.now() when speech started
+var speakStartChar=0;  // char offset we started from (for resume from middle)
+// Average Hebrew speech chars per second at rate=1 (empirical ~10-12 chars/sec)
+var CHARS_PER_SEC=11;
 
 function jump(p){stop();S.current_position=p;savePos(p);render();closeD();}
 
@@ -817,64 +823,60 @@ function toggle(){playing?pause():resume();}
 
 function speak(){
   if(!S)return;
-  pausedText=null; pausedChar=0;
-  synth.cancel();
   var seg=S.segments[S.current_position];
   var text=seg.title+'. '+seg.body;
-  _doSpeak(text);
+  pausedText=text; pausedChar=0;
+  synth.cancel();
+  _doSpeak(text,0);
 }
 
 function resume(){
-  // If we have a saved pause position, continue from there; otherwise start fresh
-  if(pausedText){
-    var remaining=pausedText.slice(pausedChar);
+  if(pausedText && pausedChar>0){
+    // Find a word boundary near pausedChar to resume cleanly
+    var idx=pausedChar;
+    // Snap back to nearest space before idx
+    while(idx>0 && pausedText[idx]!=' ')idx--;
+    if(idx>0)idx++; // skip the space
+    var remaining=pausedText.slice(idx);
     synth.cancel();
-    _doSpeak(remaining);
+    _doSpeak(remaining, idx);
   } else {
     speak();
   }
 }
 
-function _doSpeak(text){
+function _doSpeak(text, startChar){
   if(!S)return;
+  pausedText = pausedText || text; // keep original full text
+  speakStartTime=Date.now();
+  speakStartChar=startChar||0;
   var isAndroid=/Android/i.test(navigator.userAgent);
-  if(isAndroid){speakAndroid(text);}
-  else{speakIOS(text);}
+  if(isAndroid){speakAndroid(text, startChar||0);}
+  else{speakIOS(text, startChar||0);}
 }
 
-function speakIOS(text){
+function speakIOS(text, startChar){
   utt=new SpeechSynthesisUtterance(text);
   utt.lang='he-IL'; utt.rate=rate;
   if(heVoice)utt.voice=heVoice;
   utt.onstart=onSpeakStart;
   utt.onend=onSpeakEnd;
   utt.onerror=setIdle;
-  // Track char position for pause/resume
-  utt.onboundary=function(e){
-    if(e.name==='word'){pausedChar=e.charIndex;}
-  };
-  // Store full text for pause reference
-  pausedText=text;
   synth.speak(utt);
 }
 
-function speakAndroid(text){
-  // Android: split into sentences, track which sentence we're in
+function speakAndroid(text, startChar){
   var sentences=text.match(/[^.!?]+[.!?]*/g)||[text];
   var idx=0;
-  var charOffset=0;
-  pausedText=text;
+  var charOffset=startChar;
   onSpeakStart();
   function next(){
     if(idx>=sentences.length){onSpeakEnd();return;}
-    var s=sentences[idx];
-    var myOffset=charOffset;
+    var s=sentences[idx++];
     charOffset+=s.length;
-    idx++;
     utt=new SpeechSynthesisUtterance(s);
     utt.lang='he-IL'; utt.rate=rate;
     if(heVoice)utt.voice=heVoice;
-    utt.onboundary=function(e){pausedChar=myOffset+e.charIndex;};
     utt.onend=next;
     utt.onerror=setIdle;
     synth.speak(utt);
@@ -884,14 +886,19 @@ function speakAndroid(text){
 
 function pause(){
   if(playing){
-    synth.cancel();  // Web Speech API has no real pause — cancel and save position
+    // Estimate how many chars were read based on elapsed time
+    var elapsed=(Date.now()-speakStartTime)/1000; // seconds
+    var charsRead=Math.floor(elapsed * CHARS_PER_SEC * rate);
+    pausedChar=speakStartChar+charsRead;
+    // Clamp to text length
+    if(pausedText && pausedChar>=pausedText.length) pausedChar=0;
+    synth.cancel();
     setIdle();
-    // pausedText/pausedChar were updated by onboundary events
   }
 }
 
 function stop(){
-  pausedText=null; pausedChar=0;
+  pausedText=null; pausedChar=0; speakStartTime=0; speakStartChar=0;
   synth.cancel(); setIdle();
 }
 
@@ -901,6 +908,7 @@ function speakTitle(){
 }
 function onSpeakStart(){
   playing=true;
+  speakStartTime=Date.now();
   document.getElementById('pb').innerHTML='&#9646;&#9646;';
   document.getElementById('pb').classList.add('on');
   document.getElementById('pi').classList.add('on');
