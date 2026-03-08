@@ -795,48 +795,53 @@ function renderD(){
 }
 
 // ── Playback ─────────────────────────────────────────────────────
+var pausedText=null;   // text that was paused mid-way
+var pausedChar=0;      // char offset where we paused
+
 function jump(p){stop();S.current_position=p;savePos(p);render();closeD();}
+
 function nav(d){
   var wasPlaying=playing;
-  pause();
+  stop();
   var n=S.current_position+d;
   if(n<0||n>=S.total)return;
   S.current_position=n;savePos(n);render();
   if(wasPlaying){
     speak();
   } else {
-    // Say the title of the new segment
-    var seg=S.segments[S.current_position];
-    sayHebrew(seg.title);
+    sayHebrew(S.segments[S.current_position].title);
   }
 }
-function toggle(){playing?pause():speak();}
+
+function toggle(){playing?pause():resume();}
+
 function speak(){
   if(!S)return;
+  pausedText=null; pausedChar=0;
   synth.cancel();
   var seg=S.segments[S.current_position];
   var text=seg.title+'. '+seg.body;
-  // Android workaround: chunk long text
+  _doSpeak(text);
+}
+
+function resume(){
+  // If we have a saved pause position, continue from there; otherwise start fresh
+  if(pausedText){
+    var remaining=pausedText.slice(pausedChar);
+    synth.cancel();
+    _doSpeak(remaining);
+  } else {
+    speak();
+  }
+}
+
+function _doSpeak(text){
+  if(!S)return;
   var isAndroid=/Android/i.test(navigator.userAgent);
   if(isAndroid){speakAndroid(text);}
   else{speakIOS(text);}
 }
-function speakTitle(){
-  if(!S)return;
-  var seg=S.segments[S.current_position];
-  sayHebrew(seg.title);
-}
-function toggle(){playing?pause():speak();}
-function speak(){
-  if(!S)return;
-  synth.cancel();
-  var seg=S.segments[S.current_position];
-  var text=seg.title+'. '+seg.body;
-  // Android workaround: chunk long text
-  var isAndroid=/Android/i.test(navigator.userAgent);
-  if(isAndroid){speakAndroid(text);}
-  else{speakIOS(text);}
-}
+
 function speakIOS(text){
   utt=new SpeechSynthesisUtterance(text);
   utt.lang='he-IL'; utt.rate=rate;
@@ -844,23 +849,55 @@ function speakIOS(text){
   utt.onstart=onSpeakStart;
   utt.onend=onSpeakEnd;
   utt.onerror=setIdle;
+  // Track char position for pause/resume
+  utt.onboundary=function(e){
+    if(e.name==='word'){pausedChar=e.charIndex;}
+  };
+  // Store full text for pause reference
+  pausedText=text;
   synth.speak(utt);
 }
+
 function speakAndroid(text){
-  // Android cuts off long utterances — split into sentences
-  var sentences=text.match(/[^.!?]+[.!?]+/g)||[text];
+  // Android: split into sentences, track which sentence we're in
+  var sentences=text.match(/[^.!?]+[.!?]*/g)||[text];
   var idx=0;
-  onSpeakStart(); // call immediately, don't wait for onstart event
+  var charOffset=0;
+  pausedText=text;
+  onSpeakStart();
   function next(){
     if(idx>=sentences.length){onSpeakEnd();return;}
-    utt=new SpeechSynthesisUtterance(sentences[idx++]);
+    var s=sentences[idx];
+    var myOffset=charOffset;
+    charOffset+=s.length;
+    idx++;
+    utt=new SpeechSynthesisUtterance(s);
     utt.lang='he-IL'; utt.rate=rate;
     if(heVoice)utt.voice=heVoice;
+    utt.onboundary=function(e){pausedChar=myOffset+e.charIndex;};
     utt.onend=next;
     utt.onerror=setIdle;
     synth.speak(utt);
   }
   next();
+}
+
+function pause(){
+  if(playing){
+    synth.cancel();  // Web Speech API has no real pause — cancel and save position
+    setIdle();
+    // pausedText/pausedChar were updated by onboundary events
+  }
+}
+
+function stop(){
+  pausedText=null; pausedChar=0;
+  synth.cancel(); setIdle();
+}
+
+function speakTitle(){
+  if(!S)return;
+  sayHebrew(S.segments[S.current_position].title);
 }
 function onSpeakStart(){
   playing=true;
@@ -873,13 +910,10 @@ function onSpeakStart(){
 function onSpeakEnd(){
   setIdle();
   if(S&&S.current_position<S.total-1){
+    pausedText=null; pausedChar=0;
     S.current_position++;savePos(S.current_position);render();speak();
   }
 }
-function pause(){
-  if(playing){synth.cancel();setIdle();}
-}
-function stop(){synth.cancel();setIdle();}
 function setIdle(){
   playing=false;
   document.getElementById('pb').innerHTML='&#9654;';
@@ -962,9 +996,9 @@ function startListen(){
     return;
   }
   if(rec){rec.abort();rec=null;}
-  // pause speech during listening
+  // Stop speech during listening — save pause state so commands can resume
   var wasPlaying=playing;
-  if(playing)synth.pause();
+  if(playing) pause();  // saves pausedText/pausedChar
 
   rec=new SpeechRec();
   rec.lang='he-IL';
@@ -976,16 +1010,15 @@ function startListen(){
   btn.textContent='\u05de\u05d0\u05d6\u05d9\u05df...';
   vcMsg('',false);
 
-  // audio + voice cue
   beep(880,0.12,0.25);
   setTimeout(function(){sayHebrew('\u05d0\u05e0\u05d9 \u05de\u05e7\u05e9\u05d9\u05d1');},150);
 
-  // timeout beep if no result
   var timeoutId=setTimeout(function(){
     if(rec){rec.abort();}
     beep(440,0.2,0.2);
     vcMsg('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9 \u05e4\u05e7\u05d5\u05d3\u05d4',false);
-    if(wasPlaying)synth.resume();
+    // Timeout — resume playing if was playing before
+    if(wasPlaying) resume();
     resetVcBtn();
   },8000);
 
@@ -993,14 +1026,13 @@ function startListen(){
     clearTimeout(timeoutId);
     var alts=Array.from(e.results[0]).map(function(a){return a.transcript.trim();});
     var heard=alts.join(' ');
-    if(wasPlaying)synth.resume();
-    handleCmd(heard);
+    handleCmd(heard, wasPlaying);
   };
   rec.onerror=function(){
     clearTimeout(timeoutId);
     beep(440,0.2,0.2);
     vcMsg('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9 \u05d4\u05d9\u05d8\u05d1 \u2014 \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1',false);
-    if(wasPlaying)synth.resume();
+    if(wasPlaying) resume();
     resetVcBtn();
   };
   rec.onend=function(){clearTimeout(timeoutId);resetVcBtn();};
@@ -1015,33 +1047,32 @@ function resetVcBtn(){
   rec=null;
 }
 
-function handleCmd(heard){
+function handleCmd(heard, wasPlaying){
   var btn=document.getElementById('vcbtn');
   btn.classList.remove('listening');
   var h=heard.replace(/[.,!?]/g,'');
   var done=false;
   var label='';
-  var noEcho=false; // if true, action speaks for itself — no sayHebrew(label)
+  var noEcho=false;
 
   if(/\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df/.test(h)){
     resetVcBtn(); return;
   }
 
-  // ── סיום — restore VoiceOver and close
+  // ── סיום
   if(/\u05e1\u05d9\u05d5\u05dd/.test(h)){
     done=true; label='\u05e1\u05d9\u05d5\u05dd'; noEcho=true;
     beep(1046,0.15,0.2);
     pause();
-    // Re-enable VoiceOver by removing aria-hidden, then close/go home
     document.body.removeAttribute('aria-hidden');
     setTimeout(function(){window.close();},400);
   }
-  // ── הפעל / המשך / קרא — start speaking immediately, no echo
+  // ── הפעל / המשך / קרא — resume from paused position if available
   else if(/\u05d4\u05e4\u05e2\u05dc|\u05d4\u05ea\u05d7\u05dc|\u05d4\u05de\u05e9\u05da|\u05e7\u05e8\u05d0|\u05e7\u05e8\u05d9\u05d0\u05d4/.test(h)){
     done=true; label='\u05de\u05ea\u05d7\u05d9\u05dc'; noEcho=true;
-    speak();
+    resume();  // continues from pause position if one exists
   }
-  // ── עצור / השהה / פסק — pause
+  // ── עצור / השהה
   else if(/\u05e2\u05e6\u05d5\u05e8|\u05d4\u05e9\u05d4\u05d4|\u05e4\u05e1\u05e7|\u05d4\u05e4\u05e1\u05e7/.test(h)){
     pause(); done=true; label='\u05e2\u05e6\u05d5\u05e8';
   }
@@ -1063,7 +1094,8 @@ function handleCmd(heard){
   // ── עבור לתחילת הידיעון
   else if(/\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05d9\u05d3\u05d9\u05e2\u05d5\u05df|\u05e8\u05d0\u05e9\u05d5\u05df|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df/.test(h)){
     done=true; label='\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05d9\u05d3\u05d9\u05e2\u05d5\u05df'; noEcho=true;
-    stop(); S.current_position=0; savePos(0); render(); speak();
+    stop(); S.current_position=0; savePos(0); render();
+    if(wasPlaying){ speak(); } else { sayHebrew(S.segments[0].title); }
   }
   // ── מהיר
   else if(/\u05de\u05d4\u05d9\u05e8|\u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05d9\u05e8|\u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05e8/.test(h)){
