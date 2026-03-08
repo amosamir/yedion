@@ -54,48 +54,50 @@ def init_db():
 TAIL_ORDER = ["הקיבוץ הדתי", "לוח זמנים", "כלבודף"]
 
 PARASHA_RE = re.compile(
-    r"(בראשית|נח|לך לך|וירא|חיי שרה|תולדות|ויצא|וישלח|וישב|מקץ|ויגש|ויחי|"
+    r"(?<![א-ת])(בראשית|נח|לך לך|וירא|חיי שרה|תולדות|ויצא|וישלח|וישב|מקץ|ויגש|ויחי|"
     r"שמות|וארא|בא|בשלח|יתרו|משפטים|תרומה|תצוה|כי תשא|ויקהל|פקודי|"
     r"ויקרא|צו|שמיני|תזריע|מצורע|אחרי מות|אחרי|קדושים|אמור|בהר|בחוקותי|"
     r"במדבר|נשא|בהעלותך|שלח|קרח|חוקת|בלק|פינחס|מטות|מסעי|"
-    r"דברים|ואתחנן|עקב|ראה|שופטים|כי תצא|כי תבוא|נצבים|וילך|האזינו|וזאת הברכה)"
+    r"דברים|ואתחנן|עקב|ראה|שופטים|כי תצא|כי תבוא|נצבים|וילך|האזינו|וזאת הברכה)(?![א-ת])"
 )
 # Special parshiyot / additions that can follow a parasha name with a dash
 SPECIAL_RE = re.compile(r"(שקלים|זכור|פרה|החודש|הגדול|שובה|ראש השנה|יום כיפור)")
 
 # Nikud (U+05B0-U+05C7) + Taamei hamikra (U+0591-U+05AF) — remove without leaving spaces
 NIKUD_RE = re.compile(r"[\u0591-\u05c7]")
+_PH = "\x00"  # placeholder — never appears in Hebrew text
+_HE_CHAR = re.compile(r"^[\u05d0-\u05ea]$")
 
 def strip_nikud(text: str) -> str:
-    text = NIKUD_RE.sub("", text)
-    # PDF with nikud extracts each letter separately with spaces.
-    # Join consecutive runs of single Hebrew-letter tokens.
-    HE1 = re.compile(r"^[\u05d0-\u05ea\u05f0-\u05f4]$")
-    result_lines = []
-    for line in text.split("\n"):
-        tokens = line.split(" ")
-        merged = []
-        i = 0
-        while i < len(tokens):
-            tok = tokens[i]
-            if HE1.match(tok):
-                # Start of a run — collect consecutive single-letter tokens
-                run = [tok]
-                j = i + 1
-                while j < len(tokens) and HE1.match(tokens[j]):
-                    run.append(tokens[j])
-                    j += 1
-                # Only join if run is longer than 1 (real isolated letters)
-                if len(run) > 1:
-                    merged.append("".join(run))
-                else:
-                    merged.append(tok)
-                i = j
+    # Replace each diacritic with placeholder, then remove placeholder + adjacent spaces.
+    text = NIKUD_RE.sub(_PH, text)
+    text = re.sub(r" ?" + re.escape(_PH) + r" ?", "", text)
+    return text
+
+def rejoin_spaced_letters(line: str) -> str:
+    """If a line consists almost entirely of single Hebrew letters (with optional punctuation), join the letters."""
+    tokens = [t for t in line.split(" ") if t]
+    if not tokens:
+        return line
+    he_count = sum(1 for t in tokens if _HE_CHAR.match(t))
+    # If at least 70% of tokens are single Hebrew letters, it's a spaced-letter line
+    if he_count >= 2 and he_count / len(tokens) >= 0.7:
+        # Join only the Hebrew letter tokens, keep punctuation with a space
+        result = []
+        buf = []
+        for tok in tokens:
+            if _HE_CHAR.match(tok):
+                buf.append(tok)
             else:
-                merged.append(tok)
-                i += 1
-        result_lines.append(" ".join(merged))
-    return "\n".join(result_lines)
+                if buf:
+                    result.append("".join(buf))
+                    buf = []
+                result.append(tok)
+        if buf:
+            result.append("".join(buf))
+        return " ".join(result)
+    return line
+
 
 def fix_rtl_line(line: str) -> str:
     """Reverse line for RTL fix, but also fix digit sequences that got reversed."""
@@ -111,7 +113,9 @@ def extract_text_from_pdf(path: str) -> str:
         for page in pdf.pages:
             raw = page.extract_text() or ""
             lines = raw.split("\n")
-            pages.append("\n".join(fix_rtl_line(l) for l in lines))
+            # Fix RTL, then rejoin lines that were split into single letters by nikud
+            fixed = [rejoin_spaced_letters(fix_rtl_line(l)) for l in lines]
+            pages.append("\n".join(fixed))
     full = "\n\n".join(pages)
     full = re.sub(r"\n\d{1,3}\n", "\n", full)   # strip page numbers
     full = re.sub(r"[■●•◆▪]", "", full)          # strip bullets
@@ -119,27 +123,64 @@ def extract_text_from_pdf(path: str) -> str:
     full = strip_nikud(full)
     return full.strip()
 
+def extract_raw_head(path: str) -> str:
+    """Extract first-page text WITHOUT rejoin, for parasha detection."""
+    with pdfplumber.open(path) as pdf:
+        raw = pdf.pages[0].extract_text() or ""
+    lines = raw.split("\n")
+    flipped = "\n".join(fix_rtl_line(l) for l in lines)
+    return strip_nikud(flipped)
 
-def detect_title(text: str) -> str:
+
+_PARASHA_LIST = [
+    "בראשית","נח","לך לך","וירא","חיי שרה","תולדות","ויצא","וישלח","וישב","מקץ","ויגש","ויחי",
+    "שמות","וארא","בא","בשלח","יתרו","משפטים","תרומה","תצוה","כי תשא","כי תישא","ויקהל","פקודי",
+    "ויקרא","צו","שמיני","תזריע","מצורע","אחרי מות","אחרי","קדושים","אמור","בהר","בחוקותי",
+    "במדבר","נשא","בהעלותך","שלח","קרח","חוקת","בלק","פינחס","מטות","מסעי",
+    "דברים","ואתחנן","עקב","ראה","שופטים","כי תצא","כי תבוא","נצבים","וילך","האזינו","וזאת הברכה",
+]
+_SPECIAL_LIST = ["שקלים","זכור","פרה","החודש","הגדול","שובה"]
+_ALL_PARASHA = _PARASHA_LIST + _SPECIAL_LIST
+# Regex matching parasha names with optional spaces between letters (for spaced-PDF titles)
+def _make_spaced_pattern(name: str) -> str:
+    # Each char can have \s* around it; spaces within name become \s+
+    parts = []
+    for c in name:
+        if c == " ":
+            parts.append(r"\s+")
+        else:
+            if parts and parts[-1] not in (r"\s+",):
+                parts.append(r"\s*")
+            parts.append(re.escape(c))
+    return "".join(parts)
+_PARASHA_SPACED_RE = re.compile(
+    r"(?<![א-ת])(" + "|".join(_make_spaced_pattern(p) for p in _PARASHA_LIST) + r")(?![א-ת])"
+)
+_SPECIAL_SPACED_RE = re.compile(
+    r"(?<![א-ת])(" + "|".join(_make_spaced_pattern(p) for p in _SPECIAL_LIST) + r")(?![א-ת])"
+)
+
+def _normalize_parasha(raw: str) -> str:
+    """Remove spaces from matched (possibly spaced) parasha name and look it up."""
+    compact = re.sub(r"\s+", "", raw)
+    # Map compact form back to display name
+    mapping = {re.sub(r"\s+","",p): p for p in _PARASHA_LIST + _SPECIAL_LIST}
+    # Handle כי תישא -> כי תשא
+    mapping["כיתישא"] = "כי תשא"
+    return mapping.get(compact, re.sub(r"\s+", " ", raw).strip())
+
+def detect_title(text: str, raw_head: str = "") -> str:
     head = strip_nikud(text[:800])
-    # Find issue number
+    search_head = strip_nikud(raw_head) if raw_head else head
     m3 = re.search(r"גיליון\s+(\d+)", head)
     issue_num = m3.group(1) if m3 else None
-    # Find parasha
-    m = PARASHA_RE.search(head)
+    m = _PARASHA_SPACED_RE.search(search_head)
     if m:
-        parasha = m.group(0)
-        # Check for combined parasha or special: e.g. "כי תשא - פרה" or "נצבים-וילך"
-        rest = head[m.end():m.end()+80]
-        # Try another regular parasha first
-        m2 = re.search(r"\s*[-–]\s*(" + PARASHA_RE.pattern + r")", rest)
+        parasha = _normalize_parasha(m.group(1))
+        rest = search_head[m.end():m.end()+80]
+        m2 = re.search(r"\s*[-–]\s*(" + "|".join(_make_spaced_pattern(p) for p in _ALL_PARASHA) + r")", rest)
         if m2:
-            parasha += " - " + m2.group(1)
-        else:
-            # Try special parasha
-            ms = re.search(r"\s*[-–]\s*(" + SPECIAL_RE.pattern + r")", rest)
-            if ms:
-                parasha += " - " + ms.group(1)
+            parasha += " - " + _normalize_parasha(m2.group(1))
         if issue_num:
             return "ידיעון " + parasha + " גיליון " + issue_num
         return "ידיעון " + parasha
@@ -311,7 +352,8 @@ def upload():
 
     try:
         text = extract_text_from_pdf(tmp)
-        title = detect_title(text)
+        raw_head = extract_raw_head(tmp)
+        title = detect_title(text, raw_head)
         segments = split_segments(text)
 
         conn = get_db()
