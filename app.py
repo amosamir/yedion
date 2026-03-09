@@ -730,16 +730,12 @@ initV();
 
 // ── Screen switching ─────────────────────────────────────────────
 function disableVoiceOver(){
-  // We want VoiceOver to stay active for system UI (calls, etc.)
-  // but not auto-read our app content.
-  // Strategy: set aria-live="off" and remove focus traps.
-  // The vcbtn is the only interactive element VO should find.
+  // Keep VoiceOver active for system UI (calls etc.)
+  // Just ensure our button has proper aria label
   var btn=document.getElementById('vcbtn');
   if(btn){
-    btn.setAttribute('aria-label','\u05d3\u05d1\u05e8 \u05d0\u05dc\u05d9'); // דבר אלי
+    btn.setAttribute('aria-label','\u05d3\u05d1\u05e8 \u05d0\u05dc\u05d9');
     btn.setAttribute('role','button');
-    // Move focus to button — VO will announce it once then be quiet
-    setTimeout(function(){btn.focus();},100);
   }
 }
 function showBlind(){
@@ -1084,6 +1080,11 @@ function startListen(){
     }
   },8000);
 
+  // Small delay before starting rec — lets AudioContext settle on iOS
+  setTimeout(function(){
+    try{ rec.start(); } catch(e){}
+  }, 80);
+
   rec.onresult=function(e){
     // Get best transcript so far
     var result=e.results[e.results.length-1];
@@ -1098,12 +1099,22 @@ function startListen(){
       silenceTimer=setTimeout(function(){finalize(heard);},1500);
     }
   };
-  rec.onerror=function(){
+  rec.onerror=function(e){
     if(handled)return;
+    // 'no-speech' is normal (timeout) — don't show error
+    if(e.error==='no-speech'){
+      handled=true;
+      clearTimeout(timeoutId); clearTimeout(silenceTimer);
+      vcMsg('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9 \u05e4\u05e7\u05d5\u05d3\u05d4',false);
+      if(wasPlaying) resume();
+      resetVcBtn();
+      return;
+    }
+    // 'not-allowed' or other real errors
     handled=true;
     clearTimeout(timeoutId); clearTimeout(silenceTimer);
     beep(440,0.2,0.2);
-    vcMsg('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9 \u05d4\u05d9\u05d8\u05d1 \u2014 \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1',false);
+    vcMsg('\u05d1\u05e2\u05d9\u05d9\u05ea \u05de\u05d9\u05e7\u05e8\u05d5\u05e4\u05d5\u05df \u2014 \u05d0\u05e4\u05e9\u05e8 \u05d2\u05d9\u05e9\u05d4 \u05dc\u05de\u05d9\u05e7\u05e8\u05d5\u05e4\u05d5\u05df?',false);
     if(wasPlaying) resume();
     resetVcBtn();
   };
@@ -1244,7 +1255,13 @@ async function handleIssueChoice(heard){
 function handleCmd(heard, wasPlaying){
   var btn=document.getElementById('vcbtn');
   btn.classList.remove('listening');
-  var h=heard.replace(/[.,!?״׳]/g,'').trim();
+  // Normalize: remove nikud, punctuation, extra spaces
+  var h=heard
+    .replace(/[\u0591-\u05c7]/g,'')   // strip nikud/taamim
+    .replace(/[.,!?״׳"'\-]/g,'')
+    .replace(/\s+/g,' ')
+    .trim();
+  vcMsg('\u05e9\u05de\u05e2\u05ea\u05d9: "'+h+'"',false); // debug: show what was heard
   var done=false;
   var label='';
   var noEcho=false;
@@ -1260,55 +1277,55 @@ function handleCmd(heard, wasPlaying){
     pause();
     setTimeout(function(){window.close();},400);
   }
-  // ── החלף קובץ / גיליון / ידיעון — enter issue-switch mode
-  else if(/\u05d4\u05d7\u05dc\u05e3|\u05e9\u05e0\u05d4 (\u05e7\u05d5\u05d1\u05e5|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df|\u05d9\u05d3\u05d9\u05e2\u05d5\u05df)/.test(h)){
+  // ── החלף קובץ / גיליון / ידיעון
+  else if(/\u05d4\u05d7\u05dc\u05e3|\u05e9\u05e0\u05d4/.test(h)&&/\u05e7\u05d5\u05d1\u05e5|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df|\u05d9\u05d3\u05d9\u05e2\u05d5\u05df/.test(h)){
     done=true; label='\u05d4\u05d7\u05dc\u05e3 \u05e7\u05d5\u05d1\u05e5'; noEcho=true;
     startIssuePicker(wasPlaying);
   }
-  // ── הפעל / קרא — fresh start (not resume)
-  else if(/^\u05d4\u05e4\u05e2\u05dc$|^\u05e7\u05e8\u05d0$|^\u05e7\u05e8\u05d9\u05d0\u05d4$|\u05d4\u05ea\u05d7\u05dc \u05dc\u05e7\u05e8\u05d5\u05d0/.test(h)){
-    done=true; label='\u05d4\u05e4\u05e2\u05dc'; noEcho=true;
-    speak();
+  // ── עצור / השהה — check early so "עצור" doesn't get caught by other patterns
+  else if(/\u05e2\u05e6\u05d5\u05e8|\u05e2\u05e6\u05e8|\u05d4\u05e9\u05d4\u05d4|\u05e4\u05e1\u05e7|\u05d4\u05e4\u05e1\u05e7/.test(h)){
+    pause(); done=true; label='\u05e2\u05e6\u05d5\u05e8';
   }
-  // ── המשך / תמשיך — resume from pause position
-  else if(/^(\u05d4\u05de\u05e9\u05da|\u05ea\u05de\u05e9\u05d9\u05da|\u05d4\u05de\u05e9\u05da \u05d1\u05d1\u05e7\u05e9\u05d4|\u05d4\u05de\u05e9\u05da \u05dc\u05e7\u05e8\u05d5\u05d0)$/.test(h)){
+  // ── המשך / תמשיך / המשך לקרוא
+  else if(/\u05d4\u05de\u05e9\u05da|\u05ea\u05de\u05e9\u05d9\u05da|\u05d4\u05de\u05e9\u05d9\u05da/.test(h)){
     done=true; label='\u05de\u05de\u05e9\u05d9\u05da'; noEcho=true;
     resume();
   }
-  // ── עצור / השהה
-  else if(/\u05e2\u05e6\u05d5\u05e8|\u05d4\u05e9\u05d4\u05d4|\u05e4\u05e1\u05e7|\u05d4\u05e4\u05e1\u05e7/.test(h)){
-    pause(); done=true; label='\u05e2\u05e6\u05d5\u05e8';
+  // ── הפעל / קרא / התחל
+  else if(/\u05d4\u05e4\u05e2\u05dc|\u05d4\u05ea\u05d7\u05dc|\u05e7\u05e8\u05d0|\u05e7\u05e8\u05d9\u05d0\u05d4|\u05d4\u05e7\u05e8\u05d0/.test(h)){
+    done=true; label='\u05d4\u05e4\u05e2\u05dc'; noEcho=true;
+    speak();
   }
-  // ── קדימה / הבא
-  else if(/\u05d4\u05d1\u05d0|\u05e7\u05d8\u05e2 \u05d4\u05d1\u05d0|\u05e7\u05d3\u05d9\u05de\u05d4|\u05d0\u05d1\u05d0|\u05d3\u05dc\u05d2 \u05e7\u05d3\u05d9\u05de\u05d4/.test(h)){
+  // ── קדימה / הבא / דלג / הקטע הבא
+  else if(/\u05d4\u05d1\u05d0|\u05e7\u05d3\u05d9\u05de\u05d4|\u05d0\u05d1\u05d0|\u05d3\u05dc\u05d2/.test(h)&&!/\u05e7\u05d5\u05d3\u05dd/.test(h)){
     done=true; label='\u05e7\u05d8\u05e2 \u05d4\u05d1\u05d0'; noEcho=true;
     nav(1);
   }
-  // ── אחורה / קודם
-  else if(/\u05e7\u05d5\u05d3\u05dd|\u05e7\u05d8\u05e2 \u05e7\u05d5\u05d3\u05dd|\u05d0\u05d7\u05d5\u05e8\u05d4|\u05d3\u05dc\u05d2 \u05d0\u05d7\u05d5\u05e8\u05d4|\u05d7\u05d6\u05d5\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05e7\u05d5\u05d3\u05dd/.test(h)){
+  // ── אחורה / קודם / חזור לקטע הקודם
+  else if(/\u05e7\u05d5\u05d3\u05dd|\u05e7\u05d5\u05d3\u05de|\u05d0\u05d7\u05d5\u05e8\u05d4|\u05d0\u05d7\u05d5\u05e8/.test(h)){
     done=true; label='\u05e7\u05d8\u05e2 \u05e7\u05d5\u05d3\u05dd'; noEcho=true;
     nav(-1);
   }
   // ── חזור לתחילת הקטע
-  else if(/\u05d7\u05d6\u05d5\u05e8 \u05dc\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05e7\u05d8\u05e2|\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05e7\u05d8\u05e2|\u05de\u05d4\u05ea\u05d7\u05dc\u05d4/.test(h)){
+  else if(/\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05e7\u05d8\u05e2|\u05de\u05d4\u05ea\u05d7\u05dc\u05d4/.test(h)&&!/\u05d9\u05d3\u05d9\u05e2\u05d5\u05df/.test(h)){
     done=true; label='\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05e7\u05d8\u05e2'; noEcho=true;
     stop(); render(); speak();
   }
-  // ── עבור לתחילת הידיעון
-  else if(/\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05d9\u05d3\u05d9\u05e2\u05d5\u05df|\u05e8\u05d0\u05e9\u05d5\u05df|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df/.test(h)){
+  // ── עבור לתחילת הידיעון / ראשון
+  else if(/\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05d9\u05d3\u05d9\u05e2\u05d5\u05df|\u05e8\u05d0\u05e9\u05d5\u05df|\u05e8\u05d0\u05e9\u05d5\u05e0/.test(h)){
     done=true; label='\u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05d9\u05d3\u05d9\u05e2\u05d5\u05df'; noEcho=true;
     stop(); S.current_position=0; savePos(0); render();
     if(wasPlaying){ speak(); } else { sayHebrew(S.segments[0].title); }
   }
   // ── מהיר
-  else if(/\u05de\u05d4\u05d9\u05e8|\u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05d9\u05e8|\u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05e8/.test(h)){
+  else if(/\u05de\u05d4\u05d9\u05e8|\u05de\u05d4\u05e8/.test(h)){
     var speeds=[0.6,1,1.2,1.5];
     var idx=speeds.indexOf(rate);
     if(idx<speeds.length-1)spd(speeds[idx+1]);
     done=true; label='\u05de\u05d4\u05d9\u05e8 \u05d9\u05d5\u05ea\u05e8';
   }
-  // ── איטי
-  else if(/\u05d0\u05d9\u05d8\u05d9|\u05dc\u05d0\u05d8|\u05d9\u05d5\u05ea\u05e8 \u05dc\u05d0\u05d8/.test(h)){
+  // ── איטי / לאט
+  else if(/\u05d0\u05d9\u05d8\u05d9|\u05dc\u05d0\u05d8/.test(h)){
     var speeds2=[0.6,1,1.2,1.5];
     var idx2=speeds2.indexOf(rate);
     if(idx2>0)spd(speeds2[idx2-1]);
@@ -1320,12 +1337,12 @@ function handleCmd(heard, wasPlaying){
     beep(1046,0.15,0.2);
     if(!noEcho) sayHebrew(label);
     vcMsg('\u05d1\u05d5\u05e6\u05e2: '+label,true);
-    setTimeout(function(){btn.classList.remove('ok');vcMsg('',false);resetVcBtn();},2000);
+    setTimeout(function(){btn.classList.remove('ok');vcMsg('',false);resetVcBtn();},2500);
   } else {
     beep(330,0.3,0.2);
     sayHebrew('\u05dc\u05d0 \u05d4\u05d1\u05e0\u05ea\u05d9');
-    vcMsg('\u05dc\u05d0 \u05d4\u05d1\u05e0\u05ea\u05d9: "'+heard+'"',false);
-    setTimeout(function(){vcMsg('',false);resetVcBtn();},3500);
+    vcMsg('\u05dc\u05d0 \u05d4\u05d1\u05e0\u05ea\u05d9: "'+h+'"',false);
+    setTimeout(function(){vcMsg('',false);resetVcBtn();},4000);
   }
 }
 
