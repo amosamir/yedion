@@ -657,6 +657,19 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 <!-- Loading -->
 <div id="ls"><div class="em">📖</div><div id="lmsg">טוען...</div></div>
 
+<!-- End screen (shown on סיום command on iOS) -->
+<div id="end-screen" style="display:none;position:fixed;inset:0;background:#1a1a18;
+  z-index:999;flex-direction:column;align-items:center;justify-content:center;gap:24px">
+  <div style="font-size:48px">🔇</div>
+  <div style="font-size:22px;color:#fff;font-weight:900;text-align:center">סיום ההאזנה</div>
+  <div style="font-size:16px;color:#aaa;text-align:center">ניתן לסגור את הדפדפן</div>
+  <button onclick="document.getElementById('end-screen').style.display='none';showBlind();"
+    style="margin-top:16px;padding:16px 32px;background:#2d5f3f;color:#fff;border:none;
+    border-radius:16px;font-size:18px;font-family:Heebo,sans-serif;font-weight:700;cursor:pointer">
+    חזור לאפליקציה
+  </button>
+</div>
+
 <!-- Blind screen -->
 <div id="blind">
   <div id="blind-top">
@@ -860,8 +873,8 @@ function resume(){
 
 function _doSpeak(text, startChar){
   if(!S)return;
-  pausedText = pausedText || text; // keep original full text
-  speakStartTime=Date.now();
+  pausedText = pausedText || text;
+  speakStartTime=Date.now();   // set here — before any async delay
   speakStartChar=startChar||0;
   var isAndroid=/Android/i.test(navigator.userAgent);
   if(isAndroid){speakAndroid(text, startChar||0);}
@@ -874,7 +887,11 @@ function speakIOS(text, startChar){
   if(heVoice)utt.voice=heVoice;
   utt.onstart=onSpeakStart;
   utt.onend=onSpeakEnd;
-  utt.onerror=setIdle;
+  utt.onerror=function(e){
+    // Ignore 'interrupted' errors caused by unlockTTS cancel
+    if(e && e.error==='interrupted')return;
+    setIdle();
+  };
   synth.speak(utt);
 }
 
@@ -899,11 +916,9 @@ function speakAndroid(text, startChar){
 
 function pause(){
   if(playing){
-    // Estimate how many chars were read based on elapsed time
-    var elapsed=(Date.now()-speakStartTime)/1000; // seconds
+    var elapsed=(Date.now()-speakStartTime)/1000;
     var charsRead=Math.floor(elapsed * CHARS_PER_SEC * rate);
     pausedChar=speakStartChar+charsRead;
-    // Clamp to text length
     if(pausedText && pausedChar>=pausedText.length) pausedChar=0;
     synth.cancel();
     setIdle();
@@ -921,7 +936,8 @@ function speakTitle(){
 }
 function onSpeakStart(){
   playing=true;
-  speakStartTime=Date.now();
+  // Don't reset speakStartTime here — it was already set in _doSpeak
+  // to capture the true start time before iOS async delay
   document.getElementById('pb').innerHTML='&#9646;&#9646;';
   document.getElementById('pb').classList.add('on');
   document.getElementById('pi').classList.add('on');
@@ -1285,14 +1301,16 @@ function handleCmd(heard, wasPlaying){
     done=true; label='\u05e1\u05d9\u05d5\u05dd'; noEcho=true;
     beep(1046,0.15,0.2);
     pause();
-    // Try window.close (works on Android), fallback for iOS
+    sayHebrew('\u05e9\u05dc\u05d5\u05dd');
     setTimeout(function(){
+      // Try to close (works on Android/Chrome)
       window.close();
-      // If still open after 300ms, show message
+      // On iOS window.close() is a no-op — show end screen instead
       setTimeout(function(){
-        vcMsg('\u05e1\u05d2\u05d5\u05e8 \u05d0\u05ea \u05d4\u05d3\u05e4\u05d3\u05e4\u05df \u05d9\u05d3\u05e0\u05d9\u05ea',false);
-      },300);
-    },200);
+        document.getElementById('blind').style.display='none';
+        document.getElementById('end-screen').style.display='flex';
+      },400);
+    },600);
   }
   // ── החלף קובץ / גיליון / ידיעון
   else if(/\u05d4\u05d7\u05dc\u05e3|\u05e9\u05e0\u05d4/.test(h)&&/\u05e7\u05d5\u05d1\u05e5|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df|\u05d9\u05d3\u05d9\u05e2\u05d5\u05df/.test(h)){
