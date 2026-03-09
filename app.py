@@ -1019,6 +1019,15 @@ function sayHebrew(text){
   synth.speak(u);
 }
 
+// iOS requires speechSynthesis to be "unlocked" within a user gesture.
+// We do this once per button tap by speaking an empty utterance immediately.
+function unlockTTS(){
+  var u=new SpeechSynthesisUtterance('');
+  u.volume=0;
+  synth.speak(u);
+  synth.cancel();
+}
+
 // ── Voice recognition ────────────────────────────────────────────
 var SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition;
 var rec=null;
@@ -1030,6 +1039,7 @@ function vcMsg(txt,bright){
 }
 
 function startListen(){
+  unlockTTS(); // must be first — unlocks iOS TTS within this user gesture
   if(!S){
     sayHebrew('\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05de\u05d9\u05df');
     return;
@@ -1275,7 +1285,14 @@ function handleCmd(heard, wasPlaying){
     done=true; label='\u05e1\u05d9\u05d5\u05dd'; noEcho=true;
     beep(1046,0.15,0.2);
     pause();
-    setTimeout(function(){window.close();},400);
+    // Try window.close (works on Android), fallback for iOS
+    setTimeout(function(){
+      window.close();
+      // If still open after 300ms, show message
+      setTimeout(function(){
+        vcMsg('\u05e1\u05d2\u05d5\u05e8 \u05d0\u05ea \u05d4\u05d3\u05e4\u05d3\u05e4\u05df \u05d9\u05d3\u05e0\u05d9\u05ea',false);
+      },300);
+    },200);
   }
   // ── החלף קובץ / גיליון / ידיעון
   else if(/\u05d4\u05d7\u05dc\u05e3|\u05e9\u05e0\u05d4/.test(h)&&/\u05e7\u05d5\u05d1\u05e5|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df|\u05d9\u05d3\u05d9\u05e2\u05d5\u05df/.test(h)){
