@@ -1467,6 +1467,36 @@ function handleCmd(heard, wasPlaying){
     stop(); S.current_position=0; savePos(0); render();
     if(wasPlaying){ speak(); } else { sayHebrew(S.segments[0].title); }
   }
+  // ── אחרון — go to last segment
+  else if(/\u05d0\u05d7\u05e8\u05d5\u05df|\u05d0\u05d7\u05e8\u05d5\u05e0/.test(h)){
+    done=true; label='\u05e7\u05d8\u05e2 \u05d0\u05d7\u05e8\u05d5\u05df'; noEcho=true;
+    var last=S.total-1;
+    stop(); S.current_position=last; savePos(last); render();
+    if(wasPlaying){ speak(); } else { sayHebrew(S.segments[last].title); }
+  }
+  // ── עבור לקטע / פרק מספר X
+  else if((/\u05e7\u05d8\u05e2|\u05e4\u05e8\u05e7/.test(h))&&(/[0-9]|\u05d0\u05d7\u05d3|\u05e9\u05ea\u05d9\u05d9\u05dd|\u05e9\u05dc\u05d5\u05e9\u05d4|\u05d0\u05e8\u05d1\u05e2\u05d4|\u05d7\u05de\u05d9\u05e9\u05d4|\u05e9\u05e9\u05d4|\u05e9\u05d1\u05e2\u05d4|\u05e9\u05de\u05d5\u05e0\u05d4|\u05ea\u05e9\u05e2\u05d4/.test(h))){
+    done=true; noEcho=true;
+    // Extract number — digits or Hebrew words
+    var numMap={'\u05d0\u05d7\u05d3':1,'\u05d0\u05d7\u05ea':1,'\u05e9\u05ea\u05d9\u05d9\u05dd':2,'\u05e9\u05ea\u05d9':2,'\u05e9\u05dc\u05d5\u05e9\u05d4':3,'\u05e9\u05dc\u05d5\u05e9':3,'\u05d0\u05e8\u05d1\u05e2\u05d4':4,'\u05d0\u05e8\u05d1\u05e2':4,'\u05d7\u05de\u05d9\u05e9\u05d4':5,'\u05d7\u05de\u05e9':5,'\u05e9\u05e9\u05d4':6,'\u05e9\u05e9':6,'\u05e9\u05d1\u05e2\u05d4':7,'\u05e9\u05d1\u05e2':7,'\u05e9\u05de\u05d5\u05e0\u05d4':8,'\u05e9\u05de\u05d5\u05e0\u05d4':8,'\u05ea\u05e9\u05e2\u05d4':9,'\u05ea\u05e9\u05e2':9,'\u05e2\u05e9\u05e8\u05d4':10,'\u05e2\u05e9\u05e8':10};
+    var segNum=null;
+    // Try digits first
+    var dm=h.match(/([0-9]+)/);
+    if(dm) segNum=parseInt(dm[1]);
+    else {
+      // Try Hebrew number words
+      for(var hw in numMap){if(h.indexOf(hw)>=0){segNum=numMap[hw];break;}}
+    }
+    if(segNum!==null && segNum>=1 && segNum<=S.total){
+      var p=segNum-1;
+      label='\u05e7\u05d8\u05e2 '+segNum;
+      stop(); S.current_position=p; savePos(p); render();
+      if(wasPlaying){ speak(); } else { sayHebrew(S.segments[p].title); }
+    } else {
+      label='\u05dc\u05d0 \u05e0\u05de\u05e6\u05d0'; noEcho=false;
+      sayHebrew('\u05e7\u05d8\u05e2 \u05db\u05d6\u05d4 \u05dc\u05d0 \u05e7\u05d9\u05d9\u05dd');
+    }
+  }
   // ── מהיר
   else if(/\u05de\u05d4\u05d9\u05e8|\u05de\u05d4\u05e8/.test(h)){
     var speeds=[0.6,1,1.2,1.5];
