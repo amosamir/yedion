@@ -915,14 +915,74 @@ function nav(d){
 
 function toggle(){playing?pause():resume();}
 
+// ── Hebrew text normalization for TTS ───────────────────────────
+var GERSHAYIM_DICT = {
+  // ב"ה and variants
+  '\u05d1"\u05d4':'\u05d1\u05e2\u05d6\u05e8\u05ea \u05d4\u05e9\u05dd',
+  '\u05d1\u05f4\u05d4':'\u05d1\u05e2\u05d6\u05e8\u05ea \u05d4\u05e9\u05dd',
+  // ד"ר
+  '\u05d3"\u05e8':'\u05d3\u05d5\u05e7\u05d8\u05d5\u05e8',
+  '\u05d3\u05f4\u05e8':'\u05d3\u05d5\u05e7\u05d8\u05d5\u05e8',
+  // צה"ל
+  '\u05e6\u05d4"\u05dc':'\u05e6\u05d1\u05d0 \u05d4\u05d2\u05e0\u05d4 \u05dc\u05d9\u05e9\u05e8\u05d0\u05dc',
+  '\u05e6\u05d4\u05f4\u05dc':'\u05e6\u05d1\u05d0 \u05d4\u05d2\u05e0\u05d4 \u05dc\u05d9\u05e9\u05e8\u05d0\u05dc',
+  // בע"מ
+  '\u05d1\u05e2"\u05de':'\u05d1\u05e2\u05d9\u05e8\u05d1\u05d5\u05df \u05de\u05d5\u05d2\u05d1\u05dc',
+  // ז"ל
+  '\u05d6"\u05dc':'\u05d6\u05db\u05e8\u05d5\u05e0\u05d5 \u05dc\u05d1\u05e8\u05db\u05d4',
+  // שליט"א
+  '\u05e9\u05dc\u05d9\u05d8"\u05d0':'\u05e9\u05d9\u05d7\u05d9\u05d4 \u05dc\u05d9\u05d7\u05d9\u05d4 \u05d8\u05d5\u05d1\u05d4 \u05d0\u05de\u05df',
+  // זצ"ל
+  '\u05d6\u05e6"\u05dc':'\u05d6\u05db\u05e8 \u05e6\u05d3\u05d9\u05e7 \u05dc\u05d1\u05e8\u05db\u05d4',
+  // מ"מ
+  '\u05de"\u05de':'\u05de\u05de\u05dc\u05d0',
+  // ת"ת
+  '\u05ea"\u05ea':'\u05ea\u05dc\u05de\u05d5\u05d3 \u05ea\u05d5\u05e8\u05d4',
+  // כ"ק
+  '\u05db"\u05e7':'\u05db\u05d1\u05d5\u05d3 \u05e7\u05d3\u05d5\u05e9\u05ea\u05d5',
+  // מרן
+  '\u05de\u05e8"\u05df':'\u05de\u05e8\u05e0\u05d5',
+};
+
+var LETTER_NAMES = {
+  '\u05d0':'\u05d0\u05dc\u05e3','\u05d1':'\u05d1\u05d9\u05ea','\u05d2':'\u05d2\u05d9\u05de\u05dc',
+  '\u05d3':'\u05d3\u05dc\u05ea','\u05d4':'\u05d4\u05d0','\u05d5':'\u05d5\u05d0\u05d5',
+  '\u05d6':'\u05d6\u05d9\u05d9\u05df','\u05d7':'\u05d7\u05ea','\u05d8':'\u05d8\u05d9\u05ea',
+  '\u05d9':'\u05d9\u05d5\u05d3','\u05db':'\u05db\u05e3','\u05da':'\u05db\u05e3 \u05e1\u05d5\u05e4\u05d9\u05ea',
+  '\u05dc':'\u05dc\u05de\u05d3','\u05de':'\u05de\u05dd','\u05dd':'\u05de\u05dd \u05e1\u05d5\u05e4\u05d9\u05ea',
+  '\u05e0':'\u05e0\u05d5\u05df','\u05df':'\u05e0\u05d5\u05df \u05e1\u05d5\u05e4\u05d9\u05ea',
+  '\u05e1':'\u05e1\u05de\u05da','\u05e2':'\u05e2\u05d9\u05df','\u05e4':'\u05e4\u05d0',
+  '\u05e3':'\u05e4\u05d0 \u05e1\u05d5\u05e4\u05d9\u05ea','\u05e6':'\u05e6\u05d3\u05d9',
+  '\u05e5':'\u05e6\u05d3\u05d9 \u05e1\u05d5\u05e4\u05d9\u05ea','\u05e7':'\u05e7\u05d5\u05e3',
+  '\u05e8':'\u05e8\u05d9\u05e9','\u05e9':'\u05e9\u05d9\u05df','\u05ea':'\u05ea\u05d5\u05d5'
+};
+
+function expandLetterNames(word){
+  // Convert each Hebrew letter in word to its name
+  var result=[];
+  for(var i=0;i<word.length;i++){
+    var ch=word[i];
+    result.push(LETTER_NAMES[ch]||ch);
+  }
+  return result.join(' ');
+}
+
 function normalizeForSpeech(text){
-  // Replace gershayim (") and geresh (') between/after Hebrew letters with space
-  // so "ב\"ה" → "ב ה", "צה\"ל" → "צה ל"
-  // Hebrew letters: \u05d0-\u05ea
-  return text
-    .replace(/([\u05d0-\u05ea])["\u05f4]([\u05d0-\u05ea])/g,'$1 $2')
-    .replace(/([\u05d0-\u05ea])['\u05f3]/g,'$1 ')
-    .replace(/ {2,}/g,' ');
+  // 1. Replace gershayim words: look up dict first, else expand to letter names
+  text=text.replace(/([\u05d0-\u05ea]{1,6})["\u05f4]([\u05d0-\u05ea]{1,3})/g,
+    function(match){
+      if(GERSHAYIM_DICT[match])return GERSHAYIM_DICT[match];
+      // Not in dict — expand all letters to names
+      var letters=match.replace(/["\u05f4]/g,'');
+      return expandLetterNames(letters);
+    });
+  // 2. Geresh after single letter: ד' → דלת, etc.
+  text=text.replace(/([\u05d0-\u05ea])['\u05f3](?=\s|$)/g,
+    function(m,ch){ return LETTER_NAMES[ch]||ch; });
+  // 3. Single isolated Hebrew letter (surrounded by spaces/punctuation) → letter name
+  text=text.replace(/(?<![^\u05d0-\u05ea\s])(^|\s)([\u05d0-\u05ea])(\s|$)/g,
+    function(m,pre,ch,post){ return pre+(LETTER_NAMES[ch]||ch)+post; });
+  return text.replace(/ {2,}/g,' ');
 }
 
 function speak(){
