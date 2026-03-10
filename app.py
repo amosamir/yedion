@@ -538,8 +538,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 #blind-status{font-size:15px;color:#666;text-align:center;
   min-height:22px}
 #blind-phrase{font-size:13px;color:#555;text-align:center;
-  min-height:18px;line-height:1.4;padding:0 12px;
-  direction:rtl;font-style:italic}
+  min-height:52px;line-height:1.4;padding:0 12px;
+  direction:rtl;font-style:italic;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 #vcbtn{flex:1;width:100%;max-width:100%;
   background:#2d5f3f;border:none;
   border-radius:28px;color:#fff;font-family:'Heebo',sans-serif;
@@ -687,7 +688,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);
       <span style="font-size:13px;color:#2d5f3f">מקריא...</span>
     </div>
     <div id="blind-status"></div>
-    <div id="blind-phrase"></div>
     <div id="blind-phrase"></div>
   </div>
   <button id="vcbtn" onclick="startListen()">דבר אלי</button>
@@ -848,26 +848,48 @@ var chunks=[];          // array of strings for current segment
 var chunkIdx=0;         // chunk currently being spoken (or next to speak)
 var chunkStopped=false; // flag to stop the loop
 
-var WORDS_PER_CHUNK=5;
+var MAX_WORDS=20;
+var COMMA_MIN=15;
+var COMMA_MAX=25;
 
 function splitChunks(text){
-  // Split by natural breaks first, then by word count
-  var parts=text.split(/[.!?]+/);
+  // First split into sentences at . ! ?
+  // Then within long sentences, break at comma near word 15-25, else at word 20
+  var sentences=[];
+  var raw=text.split(/([.!?]+)/);
+  // Rejoin punctuation with preceding sentence
+  for(var i=0;i<raw.length;i+=2){
+    var s=raw[i]+(raw[i+1]||'');
+    s=s.trim();
+    if(s)sentences.push(s);
+  }
+
   var result=[];
-  var buf=[];
-  parts.forEach(function(p){
-    if(!p.trim())return;
-    var words=p.trim().split(" ");
-    words.forEach(function(w){
-      buf.push(w);
-      if(buf.length>=WORDS_PER_CHUNK){
-        result.push(buf.join(' '));
-        buf=[];
+  sentences.forEach(function(sent){
+    var words=sent.split(' ').filter(function(w){return w.length>0;});
+    if(words.length<=MAX_WORDS){
+      result.push(words.join(' '));
+      return;
+    }
+    // Long sentence — find break points
+    var start=0;
+    while(start<words.length){
+      var end=start+MAX_WORDS;
+      if(end>=words.length){result.push(words.slice(start).join(' '));break;}
+      // Look for comma between COMMA_MIN and COMMA_MAX words from start
+      var breakAt=-1;
+      for(var w=start+COMMA_MIN-1;w<Math.min(start+COMMA_MAX,words.length);w++){
+        if(words[w].slice(-1)===','){breakAt=w+1;break;}
       }
-    });
-    if(buf.length){result.push(buf.join(' '));buf=[];}
+      if(breakAt>0){
+        result.push(words.slice(start,breakAt).join(' '));
+        start=breakAt;
+      } else {
+        result.push(words.slice(start,end).join(' '));
+        start=end;
+      }
+    }
   });
-  if(buf.length)result.push(buf.join(' '));
   return result.filter(function(s){return s.trim().length>0;});
 }
 
