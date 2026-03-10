@@ -743,13 +743,32 @@ initV();
 
 // ── Screen switching ─────────────────────────────────────────────
 function disableVoiceOver(){
-  // Keep VoiceOver active for system UI (calls etc.)
-  // Just ensure our button has proper aria label
+  // Suppress VoiceOver while our app is in foreground:
+  // Hide everything except vcbtn from the accessibility tree.
+  // vcbtn stays visible so VO can find and activate it (2 taps).
+  var blind=document.getElementById('blind');
+  if(blind){
+    // Hide top section and bottom section from VO
+    var top=document.getElementById('blind-top');
+    var bot=document.getElementById('blind-bottom');
+    if(top)top.setAttribute('aria-hidden','true');
+    if(bot)bot.setAttribute('aria-hidden','true');
+  }
+  // Make sure vcbtn is fully accessible
   var btn=document.getElementById('vcbtn');
   if(btn){
+    btn.removeAttribute('aria-hidden');
     btn.setAttribute('aria-label','\u05d3\u05d1\u05e8 \u05d0\u05dc\u05d9');
     btn.setAttribute('role','button');
   }
+}
+
+function enableVoiceOver(){
+  // Restore full VO access — called when app goes to background (incoming call etc.)
+  var top=document.getElementById('blind-top');
+  var bot=document.getElementById('blind-bottom');
+  if(top)top.removeAttribute('aria-hidden');
+  if(bot)bot.removeAttribute('aria-hidden');
 }
 function showBlind(){
   currentScreen='blind';
@@ -973,12 +992,13 @@ var pausedForCall=false;
 document.addEventListener('visibilitychange',function(){
   if(document.hidden){
     if(playing){pause(); pausedForCall=true;}
-    // When app goes to background, iOS restores VoiceOver for system UI automatically
+    // Restore full VoiceOver so user can answer incoming call
+    enableVoiceOver();
   } else {
-    // Returned to foreground
+    // Returned to foreground — suppress VO again
+    disableVoiceOver();
     if(pausedForCall){
       pausedForCall=false;
-      // Show a prominent "resume" prompt on blind screen
       showResumePrompt();
     }
   }
@@ -1106,10 +1126,13 @@ function startListen(){
     }
   },8000);
 
-  // Small delay before starting rec — lets AudioContext settle on iOS
+  // Delay before starting rec:
+  // VoiceOver announces "דבר אלי" after the double-tap — wait for it to finish
+  // before opening the microphone, otherwise VO speech gets transcribed.
+  var voDelay=/iPhone|iPad/.test(navigator.userAgent)?900:80;
   setTimeout(function(){
     try{ rec.start(); } catch(e){}
-  }, 80);
+  }, voDelay);
 
   rec.onresult=function(e){
     // Get best transcript so far
