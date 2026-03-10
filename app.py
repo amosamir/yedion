@@ -852,7 +852,7 @@ var WORDS_PER_CHUNK=5;
 
 function splitChunks(text){
   // Split by natural breaks first, then by word count
-  var parts=text.split(/([.!?،؛\n]+)/);
+  var parts=text.split(/([.!?\n]+)/);
   var result=[];
   var buf=[];
   parts.forEach(function(p){
