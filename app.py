@@ -537,13 +537,16 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 #blind-pi .bars span{background:#2d5f3f}
 #blind-status{font-size:15px;color:#666;text-align:center;
   min-height:22px}
+#blind-phrase{font-size:13px;color:#555;text-align:center;
+  min-height:18px;line-height:1.4;padding:0 12px;
+  direction:rtl;font-style:italic}
 #vcbtn{flex:1;width:100%;max-width:100%;
   background:#2d5f3f;border:none;
   border-radius:28px;color:#fff;font-family:'Heebo',sans-serif;
   font-size:36px;font-weight:900;cursor:pointer;transition:all .2s;
   -webkit-user-select:none;user-select:none;
   display:flex;align-items:center;justify-content:center;
-  margin:16px 0}
+  margin:8px 0}
 #vcbtn:active{transform:scale(.97);opacity:.9}
 #vcbtn.listening{background:#c0392b;
   animation:pulse 1s ease-in-out infinite}
@@ -557,6 +560,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);
   color:#888;font-family:'Heebo',sans-serif;
   font-size:16px;font-weight:700;cursor:pointer;transition:all .2s;width:100%}
 #detail-btn:active{background:#e8e4dc}
+#detail-phrase{font-size:13px;color:#888;text-align:center;
+  min-height:18px;padding:2px 8px;direction:rtl;
+  font-style:italic;border-bottom:1px solid var(--border);
+  padding-bottom:6px;margin-bottom:2px}
 
 /* ── DETAIL SCREEN ── */
 #app{display:none;flex-direction:column;height:100dvh;max-width:520px;
@@ -680,6 +687,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);
       <span style="font-size:13px;color:#2d5f3f">מקריא...</span>
     </div>
     <div id="blind-status"></div>
+    <div id="blind-phrase"></div>
+    <div id="blind-phrase"></div>
   </div>
   <button id="vcbtn" onclick="startListen()">דבר אלי</button>
   <div id="blind-bottom">
@@ -699,6 +708,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
     <div id="pos-lbl"></div>
   </div>
   <div id="pbar"><div id="pfill"></div></div>
+  <div id="detail-phrase"></div>
   <div id="ta"><div id="body"></div></div>
   <div id="pi">
     <div class="bars"><span></span><span></span><span></span></div>
@@ -832,15 +842,42 @@ function renderD(){
 }
 
 // ── Playback ─────────────────────────────────────────────────────
-// Pause/resume: Web Speech API has no real pause.
-// We estimate char position from elapsed time * rate * chars-per-second.
-var pausedText=null;   // full text of current utterance
-var pausedChar=0;      // estimated char offset when paused
-var speakStartTime=0;  // Date.now() when speech started
-var speakStartChar=0;  // char offset we started from (for resume from middle)
-// Average Hebrew speech chars per second at rate=1.
-// Set conservatively low so resume goes back rather than forward.
-var CHARS_PER_SEC=7;
+// Chunk-based playback: text split into ~5-word chunks.
+// pause() saves current chunk index → resume() restarts from that chunk.
+var chunks=[];          // array of strings for current segment
+var chunkIdx=0;         // chunk currently being spoken (or next to speak)
+var chunkStopped=false; // flag to stop the loop
+
+var WORDS_PER_CHUNK=5;
+
+function splitChunks(text){
+  // Split by natural breaks first, then by word count
+  var parts=text.split(/([.!?،؛\n]+)/);
+  var result=[];
+  var buf=[];
+  parts.forEach(function(p){
+    if(!p.trim())return;
+    var words=p.trim().split(/\s+/);
+    words.forEach(function(w){
+      buf.push(w);
+      if(buf.length>=WORDS_PER_CHUNK){
+        result.push(buf.join(' '));
+        buf=[];
+      }
+    });
+    if(buf.length){result.push(buf.join(' '));buf=[];}
+  });
+  if(buf.length)result.push(buf.join(' '));
+  return result.filter(function(s){return s.trim().length>0;});
+}
+
+function showPhrase(text){
+  var t=text||'';
+  var el1=document.getElementById('blind-phrase');
+  var el2=document.getElementById('detail-phrase');
+  if(el1)el1.textContent=t;
+  if(el2)el2.textContent=t;
+}
 
 function jump(p){stop();S.current_position=p;savePos(p);render();closeD();}
 
@@ -850,11 +887,8 @@ function nav(d){
   var n=S.current_position+d;
   if(n<0||n>=S.total)return;
   S.current_position=n;savePos(n);render();
-  if(wasPlaying){
-    speak();
-  } else {
-    sayHebrew(S.segments[S.current_position].title);
-  }
+  if(wasPlaying){speak();}
+  else{sayHebrew(S.segments[S.current_position].title);}
 }
 
 function toggle(){playing?pause():resume();}
@@ -862,91 +896,59 @@ function toggle(){playing?pause():resume();}
 function speak(){
   if(!S)return;
   var seg=S.segments[S.current_position];
-  var text=seg.title+'. '+seg.body;
-  pausedText=text; pausedChar=0;
+  chunks=splitChunks(seg.title+'. '+seg.body);
+  chunkIdx=0;
   synth.cancel();
-  _doSpeak(text,0);
+  chunkStopped=false;
+  onSpeakStart();
+  _nextChunk();
 }
 
 function resume(){
-  if(pausedText && pausedChar>0){
-    // Snap to word boundary, then go back 2 extra words for context
-    var idx=pausedChar;
-    if(idx>=pausedText.length) idx=pausedText.length-1;
-    // Find word boundary at or before idx
-    while(idx>0 && pausedText[idx]===' ')idx--;
-    while(idx>0 && pausedText[idx]!==' ')idx--;
-    // Go back 2 more words
-    for(var w=0;w<2;w++){
-      while(idx>0 && pausedText[idx]===' ')idx--;
-      while(idx>0 && pausedText[idx]!==' ')idx--;
-    }
-    if(idx>0)idx++; // skip leading space
-    var remaining=pausedText.slice(idx);
+  if(chunks.length && chunkIdx<chunks.length){
     synth.cancel();
-    _doSpeak(remaining, idx);
+    chunkStopped=false;
+    onSpeakStart();
+    _nextChunk();
   } else {
     speak();
   }
 }
 
-function _doSpeak(text, startChar){
-  if(!S)return;
-  pausedText = pausedText || text;
-  speakStartTime=Date.now();   // set here — before any async delay
-  speakStartChar=startChar||0;
-  var isAndroid=/Android/i.test(navigator.userAgent);
-  if(isAndroid){speakAndroid(text, startChar||0);}
-  else{speakIOS(text, startChar||0);}
-}
-
-function speakIOS(text, startChar){
+function _nextChunk(){
+  if(chunkStopped||!playing)return;
+  if(chunkIdx>=chunks.length){onSpeakEnd();return;}
+  var text=chunks[chunkIdx];
+  showPhrase(text);
   utt=new SpeechSynthesisUtterance(text);
   utt.lang='he-IL'; utt.rate=rate;
   if(heVoice)utt.voice=heVoice;
-  utt.onstart=onSpeakStart;
-  utt.onend=onSpeakEnd;
+  utt.onend=function(){
+    if(chunkStopped)return;
+    chunkIdx++;
+    _nextChunk();
+  };
   utt.onerror=function(e){
-    // Ignore 'interrupted' errors caused by unlockTTS cancel
-    if(e && e.error==='interrupted')return;
+    if(e&&e.error==='interrupted')return;
     setIdle();
   };
   synth.speak(utt);
 }
 
-function speakAndroid(text, startChar){
-  var sentences=text.match(/[^.!?]+[.!?]*/g)||[text];
-  var idx=0;
-  var charOffset=startChar;
-  onSpeakStart();
-  function next(){
-    if(idx>=sentences.length){onSpeakEnd();return;}
-    var s=sentences[idx++];
-    charOffset+=s.length;
-    utt=new SpeechSynthesisUtterance(s);
-    utt.lang='he-IL'; utt.rate=rate;
-    if(heVoice)utt.voice=heVoice;
-    utt.onend=next;
-    utt.onerror=setIdle;
-    synth.speak(utt);
-  }
-  next();
-}
-
 function pause(){
   if(playing){
-    var elapsed=(Date.now()-speakStartTime)/1000;
-    var charsRead=Math.floor(elapsed * CHARS_PER_SEC * rate);
-    pausedChar=speakStartChar+charsRead;
-    if(pausedText && pausedChar>=pausedText.length) pausedChar=0;
+    chunkStopped=true;
     synth.cancel();
     setIdle();
+    // chunkIdx stays — resume() will restart from this chunk
   }
 }
 
 function stop(){
-  pausedText=null; pausedChar=0; speakStartTime=0; speakStartChar=0;
+  chunkStopped=true;
+  chunks=[]; chunkIdx=0;
   synth.cancel(); setIdle();
+  showPhrase('');
 }
 
 function speakTitle(){
@@ -955,8 +957,6 @@ function speakTitle(){
 }
 function onSpeakStart(){
   playing=true;
-  // Don't reset speakStartTime here — it was already set in _doSpeak
-  // to capture the true start time before iOS async delay
   document.getElementById('pb').innerHTML='&#9646;&#9646;';
   document.getElementById('pb').classList.add('on');
   document.getElementById('pi').classList.add('on');
@@ -965,8 +965,8 @@ function onSpeakStart(){
 }
 function onSpeakEnd(){
   setIdle();
+  showPhrase('');
   if(S&&S.current_position<S.total-1){
-    pausedText=null; pausedChar=0;
     S.current_position++;savePos(S.current_position);render();speak();
   }
 }
