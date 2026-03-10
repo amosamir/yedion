@@ -915,10 +915,20 @@ function nav(d){
 
 function toggle(){playing?pause():resume();}
 
+function normalizeForSpeech(text){
+  // Replace gershayim (") and geresh (') between/after Hebrew letters with space
+  // so "ב\"ה" → "ב ה", "צה\"ל" → "צה ל"
+  // Hebrew letters: \u05d0-\u05ea
+  return text
+    .replace(/([\u05d0-\u05ea])["\u05f4]([\u05d0-\u05ea])/g,'$1 $2')
+    .replace(/([\u05d0-\u05ea])['\u05f3]/g,'$1 ')
+    .replace(/ {2,}/g,' ');
+}
+
 function speak(){
   if(!S)return;
   var seg=S.segments[S.current_position];
-  chunks=splitChunks(seg.title+'. '+seg.body);
+  chunks=splitChunks(normalizeForSpeech(seg.title+'. '+seg.body));
   chunkIdx=0;
   synth.cancel();
   chunkStopped=false;
