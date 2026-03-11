@@ -1375,25 +1375,26 @@ var dictWasPlaying=false;
 
 function startDictFlow(wasPlaying){
   dictWasPlaying=wasPlaying;
-  if(wasPlaying) pause();
+  stop(); // cancel any playback + synth
   // Fetch unresolved abbreviations
   fetch('/api/abbreviations?unresolved=1')
     .then(function(r){return r.json();})
     .then(function(rows){
       var count=rows.length;
       if(count===0){
-        sayHebrew('\u05d0\u05d9\u05df \u05e8\u05d0\u05e9\u05d9 \u05ea\u05d9\u05d1\u05d5\u05ea \u05dc\u05e4\u05d9\u05e2\u05e0\u05d5\u05d7. \u05ea\u05d5\u05d3\u05d4!');
+        setTimeout(function(){ sayHebrew('\u05d0\u05d9\u05df \u05e8\u05d0\u05e9\u05d9 \u05ea\u05d9\u05d1\u05d5\u05ea \u05dc\u05e4\u05d9\u05e2\u05e0\u05d5\u05d7. \u05ea\u05d5\u05d3\u05d4!'); }, 300);
         return;
       }
-      dictQueue=rows.slice(); // sorted by count desc from server
+      dictQueue=rows.slice();
       var intro=
-        '\u05ea\u05d5\u05d3\u05d4 \u05e2\u05dc \u05e2\u05d6\u05e8\u05ea\u05da \u05d1\u05e4\u05d9\u05e2\u05e0\u05d5\u05d7 \u05e8\u05d0\u05e9\u05d9 \u05ea\u05d9\u05d1\u05d5\u05ea. '+  // תודה על עזרתך בפיענוח ראשי תיבות.
-        '\u05d9\u05e9 \u05dc\u05d9 '+count+' \u05e8\u05d0\u05e9\u05d9 \u05ea\u05d9\u05d1\u05d5\u05ea \u05dc\u05d0 \u05de\u05e4\u05d5\u05e2\u05e0\u05d7\u05d9\u05dd. '+  // יש לי X ראשי תיבות לא מפוענחים.
-        '\u05d0\u05e0\u05d9 \u05d0\u05e7\u05e8\u05d9\u05d0 \u05dc\u05da \u05db\u05dc \u05e4\u05e2\u05dd \u05d1\u05d9\u05d8\u05d5\u05d9 \u05d0\u05d7\u05d3, \u05d5\u05d0\u05ea\u05d4 \u05ea\u05d2\u05d9\u05d3 \u05dc\u05d9 \u05d1\u05de\u05d4 \u05dc\u05d4\u05d7\u05dc\u05d9\u05e3 \u05d0\u05d5\u05ea\u05d5. '+  // אני אקריא לך כל פעם ביטוי אחד, ואתה תגיד לי במה להחליף אותו.
-        '\u05dc\u05d3\u05dc\u05d2 \u05e2\u05dc \u05d1\u05d9\u05d8\u05d5\u05d9 \u05d0\u05de\u05d5\u05e8 \u05d3\u05dc\u05d2. '+  // לדלג על ביטוי אמור דלג.
-        '\u05dc\u05e1\u05d9\u05d5\u05dd \u05d0\u05de\u05d5\u05e8 \u05de\u05e1\u05e4\u05d9\u05e7. '+  // לסיום אמור מספיק.
-        '\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc.';  // כדי להתחיל אמור התחל.
-      sayHebrew(intro, function(){ dictListenYesNo(); });
+        '\u05ea\u05d5\u05d3\u05d4 \u05e2\u05dc \u05e2\u05d6\u05e8\u05ea\u05da \u05d1\u05e4\u05d9\u05e2\u05e0\u05d5\u05d7 \u05e8\u05d0\u05e9\u05d9 \u05ea\u05d9\u05d1\u05d5\u05ea. '+
+        '\u05d9\u05e9 \u05dc\u05d9 '+count+' \u05e8\u05d0\u05e9\u05d9 \u05ea\u05d9\u05d1\u05d5\u05ea \u05dc\u05d0 \u05de\u05e4\u05d5\u05e2\u05e0\u05d7\u05d9\u05dd. '+
+        '\u05d0\u05e0\u05d9 \u05d0\u05e7\u05e8\u05d9\u05d0 \u05dc\u05da \u05db\u05dc \u05e4\u05e2\u05dd \u05d1\u05d9\u05d8\u05d5\u05d9 \u05d0\u05d7\u05d3, \u05d5\u05d0\u05ea\u05d4 \u05ea\u05d2\u05d9\u05d3 \u05dc\u05d9 \u05d1\u05de\u05d4 \u05dc\u05d4\u05d7\u05dc\u05d9\u05e3 \u05d0\u05d5\u05ea\u05d5. '+
+        '\u05dc\u05d3\u05dc\u05d2 \u05e2\u05dc \u05d1\u05d9\u05d8\u05d5\u05d9 \u05d0\u05de\u05d5\u05e8 \u05d3\u05dc\u05d2. '+
+        '\u05dc\u05e1\u05d9\u05d5\u05dd \u05d0\u05de\u05d5\u05e8 \u05de\u05e1\u05e4\u05d9\u05e7. '+
+        '\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc.';
+      // Wait for synth to fully clear before starting long intro
+      setTimeout(function(){ sayHebrew(intro, function(){ dictListenYesNo(); }); }, 400);
     });
 }
 
@@ -1480,18 +1481,27 @@ function dictEnd(){
 
 // sayHebrew with onEnd callback
 function sayHebrew(text, onEnd){
-  synth.cancel();
+  // When no callback: cancel any current speech and speak immediately
+  // When callback given: DO NOT cancel — just enqueue and wait for real end
+  if(!onEnd) synth.cancel();
   var u=new SpeechSynthesisUtterance(text);
   u.lang='he-IL'; u.rate=rate;
   if(heVoice) u.voice=heVoice;
   if(onEnd){
     var fired=false;
-    function fire(){ if(!fired){fired=true; onEnd();} }
+    var fallbackTimer=null;
+    function fire(){
+      if(fired) return;
+      fired=true;
+      clearTimeout(fallbackTimer);
+      // Small delay so synth queue fully clears before mic opens
+      setTimeout(onEnd, 400);
+    }
     u.onend=fire;
-    u.onerror=fire;
-    // iOS sometimes never fires onend — fallback based on text length
-    var ms=Math.max(2000, text.length*80);
-    setTimeout(fire, ms);
+    u.onerror=function(e){ if(e.error!=='interrupted') fire(); };
+    // Fallback: estimate speech duration (~65ms per char at rate=1, +1s buffer)
+    var estMs=Math.max(3000, Math.round(text.length * 65 / rate) + 1000);
+    fallbackTimer=setTimeout(fire, estMs);
   }
   synth.speak(u);
 }
@@ -1505,7 +1515,7 @@ function dictListenOnce(callback){
   var handled=false;
   var silT=null;
   var tout=setTimeout(function(){
-    if(!handled){ handled=true; if(r2)r2.abort(); callback(''); }
+    if(!handled){ handled=true; if(r2){r2.abort();r2=null;} callback(''); }
   },8000);
   function fin(heard){
     if(handled)return; handled=true;
@@ -1519,10 +1529,13 @@ function dictListenOnce(callback){
     if(res.isFinal){ fin(heard); }
     else { clearTimeout(silT); silT=setTimeout(function(){fin(heard);},1500); }
   };
-  r2.onerror=function(e){ if(!handled){handled=true;clearTimeout(tout);clearTimeout(silT);callback('');} };
+  r2.onerror=function(e){ if(!handled){handled=true;clearTimeout(tout);clearTimeout(silT);if(r2){r2.abort();r2=null;}callback('');} };
   r2.onend=function(){};
   var voDelay=/iPhone|iPad/.test(navigator.userAgent)?900:80;
-  setTimeout(function(){ try{r2.start();}catch(e){} },voDelay);
+  setTimeout(function(){
+    synth.cancel(); // make sure TTS is done before mic opens
+    setTimeout(function(){ try{r2.start();}catch(e){} }, 150);
+  }, voDelay);
 }
 
 function startIssuePicker(wasPlaying){
