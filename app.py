@@ -1484,7 +1484,15 @@ function sayHebrew(text, onEnd){
   var u=new SpeechSynthesisUtterance(text);
   u.lang='he-IL'; u.rate=rate;
   if(heVoice) u.voice=heVoice;
-  if(onEnd) u.onend=onEnd;
+  if(onEnd){
+    var fired=false;
+    function fire(){ if(!fired){fired=true; onEnd();} }
+    u.onend=fire;
+    u.onerror=fire;
+    // iOS sometimes never fires onend — fallback based on text length
+    var ms=Math.max(2000, text.length*80);
+    setTimeout(fire, ms);
+  }
   synth.speak(u);
 }
 
