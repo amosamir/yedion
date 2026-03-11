@@ -1392,20 +1392,19 @@ function startDictFlow(wasPlaying){
         '\u05d0\u05e0\u05d9 \u05d0\u05e7\u05e8\u05d9\u05d0 \u05dc\u05da \u05db\u05dc \u05e4\u05e2\u05dd \u05d1\u05d9\u05d8\u05d5\u05d9 \u05d0\u05d7\u05d3, \u05d5\u05d0\u05ea\u05d4 \u05ea\u05d2\u05d9\u05d3 \u05dc\u05d9 \u05d1\u05de\u05d4 \u05dc\u05d4\u05d7\u05dc\u05d9\u05e3 \u05d0\u05d5\u05ea\u05d5. '+  // אני אקריא לך כל פעם ביטוי אחד, ואתה תגיד לי במה להחליף אותו.
         '\u05dc\u05d3\u05dc\u05d2 \u05e2\u05dc \u05d1\u05d9\u05d8\u05d5\u05d9 \u05d0\u05de\u05d5\u05e8 \u05d3\u05dc\u05d2. '+  // לדלג על ביטוי אמור דלג.
         '\u05dc\u05e1\u05d9\u05d5\u05dd \u05d0\u05de\u05d5\u05e8 \u05de\u05e1\u05e4\u05d9\u05e7. '+  // לסיום אמור מספיק.
-        '\u05d0\u05e4\u05e9\u05e8 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc?';  // אפשר להתחיל?
+        '\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc.';  // כדי להתחיל אמור התחל.
       sayHebrew(intro, function(){ dictListenYesNo(); });
     });
 }
 
 function dictListenYesNo(){
-  // Listen for כן/לא to start
+  // Advance unless user explicitly says no/stop
   dictListenOnce(function(heard){
     var h=normH(heard);
-    if(/\u05dc\u05d0/.test(h)){
-      // לא — exit
+    if(/\u05dc\u05d0|\u05e2\u05e6\u05d5\u05e8|\u05de\u05e1\u05e4\u05d9\u05e7|\u05d3\u05d9/.test(h) && h.length<8){
+      // לא / עצור / מספיק / די — exit
       dictEnd();
     } else {
-      // כן or anything else — start
       dictAskNext();
     }
   });
