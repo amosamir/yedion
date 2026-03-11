@@ -802,13 +802,27 @@ async function load(){
   document.getElementById('ls').style.display='none';
   if(d.no_issue){
     document.getElementById('blind').style.display='flex';
-    document.getElementById('blind-seg').textContent='אין ידיעון זמין';
+    document.getElementById('blind-seg').textContent='\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05de\u05d9\u05df';
     return;
   }
   S=d;
   render();
   renderD();
   showBlind();
+  // Opening announcement — once per session
+  if(!sessionStorage.getItem('greeted')){
+    sessionStorage.setItem('greeted','1');
+    var seg=S.segments[S.current_position];
+    setTimeout(function(){
+      sayHebrew(
+        '\u05e9\u05dc\u05d5\u05dd. ' +           // שלום.
+        S.issue_title+'. '+                        // שם הידיעון
+        '\u05d0\u05e0\u05d7\u05e0\u05d5 \u05d1'+seg.title+'. '+ // אנחנו ב + שם קטע
+        '\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d4\u05e7\u05e9 \u05e2\u05dc \u05de\u05e8\u05db\u05d6 \u05d4\u05de\u05e1\u05da \u05d5\u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc. '+  // כדי להתחיל הקש על מרכז המסך ואמור התחל.
+        '\u05dc\u05e8\u05e9\u05d9\u05de\u05ea \u05e4\u05e7\u05d5\u05d3\u05d5\u05ea \u05d0\u05de\u05d5\u05e8 \u05e2\u05d6\u05e8\u05d4.'  // לרשימת פקודות אמור עזרה.
+      );
+    },600);
+  }
 }
 
 // ── Render ───────────────────────────────────────────────────────
@@ -945,16 +959,16 @@ var GERSHAYIM_DICT = {
 };
 
 var LETTER_NAMES = {
-  '\u05d0':'\u05d0\u05dc\u05e3','\u05d1':'\u05d1\u05d9\u05ea','\u05d2':'\u05d2\u05d9\u05de\u05dc',
-  '\u05d3':'\u05d3\u05dc\u05ea','\u05d4':'\u05d4\u05d0','\u05d5':'\u05d5\u05d0\u05d5',
-  '\u05d6':'\u05d6\u05d9\u05d9\u05df','\u05d7':'\u05d7\u05ea','\u05d8':'\u05d8\u05d9\u05ea',
-  '\u05d9':'\u05d9\u05d5\u05d3','\u05db':'\u05db\u05e3','\u05da':'\u05db\u05e3 \u05e1\u05d5\u05e4\u05d9\u05ea',
-  '\u05dc':'\u05dc\u05de\u05d3','\u05de':'\u05de\u05dd','\u05dd':'\u05de\u05dd \u05e1\u05d5\u05e4\u05d9\u05ea',
-  '\u05e0':'\u05e0\u05d5\u05df','\u05df':'\u05e0\u05d5\u05df \u05e1\u05d5\u05e4\u05d9\u05ea',
-  '\u05e1':'\u05e1\u05de\u05da','\u05e2':'\u05e2\u05d9\u05df','\u05e4':'\u05e4\u05d0',
-  '\u05e3':'\u05e4\u05d0 \u05e1\u05d5\u05e4\u05d9\u05ea','\u05e6':'\u05e6\u05d3\u05d9',
-  '\u05e5':'\u05e6\u05d3\u05d9 \u05e1\u05d5\u05e4\u05d9\u05ea','\u05e7':'\u05e7\u05d5\u05e3',
-  '\u05e8':'\u05e8\u05d9\u05e9','\u05e9':'\u05e9\u05d9\u05df','\u05ea':'\u05ea\u05d5\u05d5'
+  'א':'אלף','ב':'בית','ג':'גימל',
+  'ד':'דלת','ה':'הא','ו':'וו',
+  'ז':'זיין','ח':'חת','ט':'טית',
+  'י':'יוד','כ':'כף','ך':'כף',
+  'ל':'למד','מ':'מם','ם':'מם',
+  'נ':'נון','ן':'נון',
+  'ס':'סמך','ע':'עין','פ':'פא',
+  'ף':'פא','צ':'צדי',
+  'ץ':'צדי','ק':'קוף',
+  'ר':'ריש','ש':'שין','ת':'תו'
 };
 
 function expandLetterNames(word){
@@ -968,18 +982,29 @@ function expandLetterNames(word){
 }
 
 function normalizeForSpeech(text){
-  // 1. Replace gershayim words: look up dict first, else expand to letter names
+  // 1. Replace gershayim words
   text=text.replace(/([\u05d0-\u05ea]{1,6})["\u05f4]([\u05d0-\u05ea]{1,3})/g,
     function(match){
+      // Dictionary lookup first
       if(GERSHAYIM_DICT[match])return GERSHAYIM_DICT[match];
-      // Not in dict — expand all letters to names
       var letters=match.replace(/["\u05f4]/g,'');
+      var totalLen=letters.length;
+      // Hebrew year: exactly 4 letters starting with תש / תר / תק / תנ etc.
+      // Pattern: starts with ת and second letter is one of the century letters
+      if(totalLen===4 && letters[0]==='\u05ea' &&
+         '\u05e9\u05e8\u05e7\u05e6\u05e0\u05de\u05dc\u05db\u05d9'.indexOf(letters[1])>=0){
+        // It's a year — expand each letter to its name
+        return expandLetterNames(letters);
+      }
+      // Long acronym (4+ letters, not a year) → just remove gershayim
+      if(totalLen>=4) return letters;
+      // Short (2-3 letters) → expand to letter names
       return expandLetterNames(letters);
     });
-  // 2. Geresh after single letter: ד' → דלת, etc.
+  // 2. Geresh after single letter: ד' → דלת
   text=text.replace(/([\u05d0-\u05ea])['\u05f3](?=\s|$)/g,
     function(m,ch){ return LETTER_NAMES[ch]||ch; });
-  // 3. Single isolated Hebrew letter (surrounded by spaces/punctuation) → letter name
+  // 3. Single isolated Hebrew letter → letter name
   text=text.replace(/(?<![^\u05d0-\u05ea\s])(^|\s)([\u05d0-\u05ea])(\s|$)/g,
     function(m,pre,ch,post){ return pre+(LETTER_NAMES[ch]||ch)+post; });
   return text.replace(/ {2,}/g,' ');
@@ -1496,6 +1521,43 @@ function handleCmd(heard, wasPlaying){
       label='\u05dc\u05d0 \u05e0\u05de\u05e6\u05d0'; noEcho=false;
       sayHebrew('\u05e7\u05d8\u05e2 \u05db\u05d6\u05d4 \u05dc\u05d0 \u05e7\u05d9\u05d9\u05dd');
     }
+  }
+  // ── עזרה / הסבר / הוראות
+  else if(/\u05e2\u05d6\u05e8\u05d4|\u05d4\u05e1\u05d1\u05e8|\u05d4\u05d5\u05e8\u05d0\u05d5\u05ea|\u05d4\u05e1\u05d1\u05e8\u05d9\u05dd/.test(h)){
+    done=true; label='\u05e2\u05d6\u05e8\u05d4'; noEcho=true;
+    sayHebrew(
+      '\u05d4\u05e4\u05e7\u05d5\u05d3\u05d5\u05ea \u05d4\u05d6\u05de\u05d9\u05e0\u05d5\u05ea: '+
+      '\u05d4\u05ea\u05d7\u05dc, \u05de\u05ea\u05d7\u05d9\u05dc \u05e7\u05e8\u05d9\u05d0\u05d4 \u05de\u05d4\u05ea\u05d7\u05dc\u05d4. '+
+      '\u05d4\u05de\u05e9\u05da, \u05de\u05de\u05e9\u05d9\u05da \u05d0\u05d7\u05e8\u05d9 \u05e2\u05e6\u05d9\u05e8\u05d4. '+
+      '\u05e2\u05e6\u05d5\u05e8, \u05e2\u05d5\u05e6\u05e8 \u05d0\u05ea \u05d4\u05e7\u05e8\u05d9\u05d0\u05d4. '+
+      '\u05e7\u05d3\u05d9\u05de\u05d4, \u05e2\u05d5\u05d1\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05d1\u05d0. '+
+      '\u05d0\u05d7\u05d5\u05e8\u05d4, \u05d7\u05d5\u05d6\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05e7\u05d5\u05d3\u05dd. '+
+      '\u05e8\u05d0\u05e9\u05d5\u05df, \u05e2\u05d5\u05d1\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05e8\u05d0\u05e9\u05d5\u05df. '+
+      '\u05d0\u05d7\u05e8\u05d5\u05df, \u05e2\u05d5\u05d1\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05d0\u05d7\u05e8\u05d5\u05df. '+
+      '\u05e7\u05d8\u05e2 3, \u05e7\u05d5\u05e4\u05e5 \u05dc\u05e7\u05d8\u05e2 \u05de\u05e1\u05e4\u05e8 3. '+
+      '\u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05e8, \u05de\u05d2\u05d1\u05d9\u05e8 \u05de\u05d4\u05d9\u05e8\u05d5\u05ea. '+
+      '\u05d9\u05d5\u05ea\u05e8 \u05dc\u05d0\u05d8, \u05de\u05d5\u05e8\u05d9\u05d3 \u05de\u05d4\u05d9\u05e8\u05d5\u05ea. '+
+      '\u05d4\u05d7\u05dc\u05e3 \u05d9\u05d3\u05d9\u05e2\u05d5\u05df, \u05e2\u05d5\u05d1\u05e8 \u05dc\u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d0\u05d7\u05e8. '+
+      '\u05e1\u05d9\u05d5\u05dd, \u05de\u05e1\u05d9\u05d9\u05dd \u05d4\u05d0\u05d6\u05e0\u05d4. '+
+      '\u05dc\u05e4\u05d9\u05e8\u05d5\u05d8 \u05d7\u05dc\u05d5\u05e4\u05d5\u05ea \u05d0\u05de\u05d5\u05e8 \u05d0\u05dc\u05d8\u05e8\u05e0\u05d8\u05d9\u05d1\u05d5\u05ea.'
+    );
+  }
+  // ── אלטרנטיבות
+  else if(/\u05d0\u05dc\u05d8\u05e8\u05e0\u05d8\u05d9\u05d1|\u05d7\u05dc\u05d5\u05e4\u05d5\u05ea|\u05d7\u05dc\u05d5\u05e4\u05d4/.test(h)){
+    done=true; label='\u05d0\u05dc\u05d8\u05e8\u05e0\u05d8\u05d9\u05d1\u05d5\u05ea'; noEcho=true;
+    sayHebrew(
+      '\u05d7\u05dc\u05d5\u05e4\u05d5\u05ea: '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05d4\u05ea\u05d7\u05dc, \u05d2\u05dd \u05d4\u05e4\u05e2\u05dc \u05d0\u05d5 \u05e7\u05e8\u05d0. '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05d4\u05de\u05e9\u05da, \u05d2\u05dd \u05ea\u05de\u05e9\u05d9\u05da. '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05e2\u05e6\u05d5\u05e8, \u05d2\u05dd \u05d4\u05e9\u05d4\u05d4 \u05d0\u05d5 \u05d4\u05e4\u05e1\u05e7. '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05e7\u05d3\u05d9\u05de\u05d4, \u05d2\u05dd \u05d4\u05d1\u05d0, \u05d3\u05dc\u05d2, \u05d0\u05d5 \u05d0\u05d1\u05d0. '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05d0\u05d7\u05d5\u05e8\u05d4, \u05d2\u05dd \u05e7\u05d5\u05d3\u05dd \u05d0\u05d5 \u05d7\u05d6\u05d5\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05e7\u05d5\u05d3\u05dd. '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05e8\u05d0\u05e9\u05d5\u05df, \u05d2\u05dd \u05ea\u05d7\u05d9\u05dc\u05ea \u05d4\u05d9\u05d3\u05d9\u05e2\u05d5\u05df. '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05e7\u05d8\u05e2 3, \u05d2\u05dd \u05e4\u05e8\u05e7 3 \u05d0\u05d5 \u05e2\u05d1\u05d5\u05e8 \u05dc\u05e7\u05d8\u05e2 3. '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05d9\u05d5\u05ea\u05e8 \u05de\u05d4\u05e8, \u05d2\u05dd \u05de\u05d4\u05d9\u05e8. '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05d9\u05d5\u05ea\u05e8 \u05dc\u05d0\u05d8, \u05d2\u05dd \u05d0\u05d9\u05d8\u05d9 \u05d0\u05d5 \u05dc\u05d0\u05d8. '+
+      '\u05d1\u05de\u05e7\u05d5\u05dd \u05d4\u05d7\u05dc\u05e3 \u05d9\u05d3\u05d9\u05e2\u05d5\u05df, \u05d2\u05dd \u05e9\u05e0\u05d4 \u05d2\u05d9\u05dc\u05d9\u05d5\u05df \u05d0\u05d5 \u05e9\u05e0\u05d4 \u05e7\u05d5\u05d1\u05e5.'
+    );
   }
   // ── מהיר
   else if(/\u05de\u05d4\u05d9\u05e8|\u05de\u05d4\u05e8/.test(h)){
