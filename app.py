@@ -1242,6 +1242,8 @@ function beep(freq,dur,vol){
 // iOS requires speechSynthesis to be "unlocked" within a user gesture.
 // We do this once per button tap by speaking an empty utterance immediately.
 function unlockTTS(){
+  // Only unlock if nothing is currently speaking — don't interrupt greeting
+  if(synth.speaking || synth.pending) return;
   var u=new SpeechSynthesisUtterance('');
   u.volume=0;
   synth.speak(u);
@@ -1496,11 +1498,15 @@ function sayHebrew(text, onEnd){
   synth.speak(u);
 }
 
-// Show debug text under vcbtn during dict flow
-function dictDebug(txt){
-  var el=document.getElementById('vcmsg');
-  if(el) el.textContent=txt;
+// Normalize heard text for command matching (same as handleCmd)
+function normH(text){
+  return (text||'')
+    .replace(/[\u0591-\u05c7]/g,'')
+    .replace(/[.,!?״׳"'\-]/g,'')
+    .replace(/\s+/g,' ')
+    .trim();
 }
+function dictDebug(txt){ var el=document.getElementById('vcmsg'); if(el) el.textContent=txt; }
 function dictListenOnce(callback){
   if(!SpeechRec){ callback(''); return; }
   if(rec){rec.abort();rec=null;}
