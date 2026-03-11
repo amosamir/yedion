@@ -41,10 +41,62 @@ def init_db():
             issue_id INTEGER,
             segment_position INTEGER DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS abbreviations (
+            abbr TEXT PRIMARY KEY,
+            expansion TEXT NOT NULL DEFAULT '',
+            count INTEGER NOT NULL DEFAULT 0
+        );
         INSERT INTO listener_state (id, issue_id, segment_position)
         VALUES (1, NULL, 0)
         ON CONFLICT (id) DO NOTHING;
     """)
+    # Seed known abbreviations (without expansion — user will fill via voice)
+    known = [
+        '\u05d1"\u05d4', '\u05d3"\u05e8', '\u05e6\u05d4"\u05dc',
+        '\u05d1\u05e2"\u05de', '\u05d6"\u05dc', '\u05e9\u05dc\u05d9\u05d8"\u05d0',
+        '\u05d6\u05e6"\u05dc', '\u05de"\u05de', '\u05ea"\u05ea',
+        '\u05db"\u05e7', '\u05de\u05e8"\u05df',
+    ]
+    for a in known:
+        cur.execute(
+            "INSERT INTO abbreviations (abbr, expansion, count) VALUES (%s, '', 0) ON CONFLICT (abbr) DO NOTHING",
+            (a,)
+        )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# ─── Abbreviation detection (for PDF upload) ─────────────────────────────────
+# Gershayim variants: regular " (U+0022) and Hebrew gershayim ״ (U+05F4)
+_ABBR_RE = re.compile(r'[\u05d0-\u05ea]+["\u05f4][\u05d0-\u05ea]+')
+
+def _is_hebrew_year(word: str) -> bool:
+    """4-letter word starting with ת + century letter — it's a year, skip."""
+    century = 'שרקצנמלכי'
+    return len(word) == 4 and word[0] == '\u05ea' and word[1] in century
+
+def extract_abbreviations(text: str) -> dict:
+    """Return {abbr: count} for all gershayim-words in text (excluding years)."""
+    counts = {}
+    for m in _ABBR_RE.finditer(text):
+        w = m.group(0)
+        if _is_hebrew_year(w.replace('"', '').replace('\u05f4', '')):
+            continue
+        counts[w] = counts.get(w, 0) + 1
+    return counts
+
+def upsert_abbreviations(counts: dict):
+    """Insert new abbrevs with count; update count for existing ones."""
+    if not counts:
+        return
+    conn = get_db(); cur = conn.cursor()
+    for abbr, cnt in counts.items():
+        cur.execute("""
+            INSERT INTO abbreviations (abbr, expansion, count)
+            VALUES (%s, '', %s)
+            ON CONFLICT (abbr) DO UPDATE SET count = abbreviations.count + EXCLUDED.count
+        """, (abbr, cnt))
+    conn.commit(); cur.close(); conn.close()
     conn.commit()
     cur.close()
     conn.close()
@@ -371,6 +423,10 @@ def upload():
         conn.commit()
         cur.close(); conn.close()
 
+        # Extract and upsert abbreviations found in this issue
+        abbr_counts = extract_abbreviations(text)
+        upsert_abbreviations(abbr_counts)
+
         return jsonify({"ok": True, "issue_id": issue_id, "title": title,
                         "segments": len(segments),
                         "preview": [s["title"] for s in segments]})
@@ -452,6 +508,28 @@ def rename_segment():
     conn = get_db(); cur = conn.cursor()
     cur.execute("UPDATE segments SET title=%s WHERE id=%s",
                 (data["title"], data["segment_id"]))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/abbreviations")
+def get_abbreviations():
+    """Return all abbreviations, sorted by count desc. Optionally filter unresolved."""
+    only_unresolved = request.args.get("unresolved") == "1"
+    conn = get_db(); cur = conn.cursor()
+    if only_unresolved:
+        cur.execute("SELECT abbr, expansion, count FROM abbreviations WHERE expansion='' ORDER BY count DESC")
+    else:
+        cur.execute("SELECT abbr, expansion, count FROM abbreviations ORDER BY count DESC")
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/abbreviations/update", methods=["POST"])
+def update_abbreviation():
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE abbreviations SET expansion=%s WHERE abbr=%s",
+                (data["expansion"], data["abbr"]))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
@@ -797,6 +875,7 @@ function showDetail(){
 
 // ── Load ─────────────────────────────────────────────────────────
 async function load(){
+  await loadAbbreviations();
   var r=await fetch('/api/current');
   var d=await r.json();
   document.getElementById('ls').style.display='none';
@@ -809,19 +888,26 @@ async function load(){
   render();
   renderD();
   showBlind();
-  // Opening announcement — once per session
+  // Opening announcement on first user touch (iOS/Android require gesture for TTS)
   if(!sessionStorage.getItem('greeted')){
-    sessionStorage.setItem('greeted','1');
-    var seg=S.segments[S.current_position];
-    setTimeout(function(){
-      sayHebrew(
-        '\u05e9\u05dc\u05d5\u05dd. ' +           // שלום.
-        S.issue_title+'. '+                        // שם הידיעון
-        '\u05d0\u05e0\u05d7\u05e0\u05d5 \u05d1'+seg.title+'. '+ // אנחנו ב + שם קטע
-        '\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d4\u05e7\u05e9 \u05e2\u05dc \u05de\u05e8\u05db\u05d6 \u05d4\u05de\u05e1\u05da \u05d5\u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc. '+  // כדי להתחיל הקש על מרכז המסך ואמור התחל.
-        '\u05dc\u05e8\u05e9\u05d9\u05de\u05ea \u05e4\u05e7\u05d5\u05d3\u05d5\u05ea \u05d0\u05de\u05d5\u05e8 \u05e2\u05d6\u05e8\u05d4.'  // לרשימת פקודות אמור עזרה.
-      );
-    },600);
+    function greetOnce(){
+      document.removeEventListener('touchstart',greetOnce);
+      document.removeEventListener('mousedown',greetOnce);
+      sessionStorage.setItem('greeted','1');
+      var seg=S.segments[S.current_position];
+      unlockTTS();
+      setTimeout(function(){
+        sayHebrew(
+          '\u05e9\u05dc\u05d5\u05dd. ' +
+          S.issue_title+'. '+
+          '\u05d0\u05e0\u05d7\u05e0\u05d5 \u05d1'+seg.title+'. '+
+          '\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d4\u05e7\u05e9 \u05e2\u05dc \u05de\u05e8\u05db\u05d6 \u05d4\u05de\u05e1\u05da \u05d5\u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc. '+
+          '\u05dc\u05e8\u05e9\u05d9\u05de\u05ea \u05e4\u05e7\u05d5\u05d3\u05d5\u05ea \u05d0\u05de\u05d5\u05e8 \u05e2\u05d6\u05e8\u05d4.'
+        );
+      },200);
+    }
+    document.addEventListener('touchstart',greetOnce,{once:true});
+    document.addEventListener('mousedown',greetOnce,{once:true});
   }
 }
 
@@ -929,34 +1015,22 @@ function nav(d){
 
 function toggle(){playing?pause():resume();}
 
-// ── Hebrew text normalization for TTS ───────────────────────────
-var GERSHAYIM_DICT = {
-  // ב"ה and variants
-  '\u05d1"\u05d4':'\u05d1\u05e2\u05d6\u05e8\u05ea \u05d4\u05e9\u05dd',
-  '\u05d1\u05f4\u05d4':'\u05d1\u05e2\u05d6\u05e8\u05ea \u05d4\u05e9\u05dd',
-  // ד"ר
-  '\u05d3"\u05e8':'\u05d3\u05d5\u05e7\u05d8\u05d5\u05e8',
-  '\u05d3\u05f4\u05e8':'\u05d3\u05d5\u05e7\u05d8\u05d5\u05e8',
-  // צה"ל
-  '\u05e6\u05d4"\u05dc':'\u05e6\u05d1\u05d0 \u05d4\u05d2\u05e0\u05d4 \u05dc\u05d9\u05e9\u05e8\u05d0\u05dc',
-  '\u05e6\u05d4\u05f4\u05dc':'\u05e6\u05d1\u05d0 \u05d4\u05d2\u05e0\u05d4 \u05dc\u05d9\u05e9\u05e8\u05d0\u05dc',
-  // בע"מ
-  '\u05d1\u05e2"\u05de':'\u05d1\u05e2\u05d9\u05e8\u05d1\u05d5\u05df \u05de\u05d5\u05d2\u05d1\u05dc',
-  // ז"ל
-  '\u05d6"\u05dc':'\u05d6\u05db\u05e8\u05d5\u05e0\u05d5 \u05dc\u05d1\u05e8\u05db\u05d4',
-  // שליט"א
-  '\u05e9\u05dc\u05d9\u05d8"\u05d0':'\u05e9\u05d9\u05d7\u05d9\u05d4 \u05dc\u05d9\u05d7\u05d9\u05d4 \u05d8\u05d5\u05d1\u05d4 \u05d0\u05de\u05df',
-  // זצ"ל
-  '\u05d6\u05e6"\u05dc':'\u05d6\u05db\u05e8 \u05e6\u05d3\u05d9\u05e7 \u05dc\u05d1\u05e8\u05db\u05d4',
-  // מ"מ
-  '\u05de"\u05de':'\u05de\u05de\u05dc\u05d0',
-  // ת"ת
-  '\u05ea"\u05ea':'\u05ea\u05dc\u05de\u05d5\u05d3 \u05ea\u05d5\u05e8\u05d4',
-  // כ"ק
-  '\u05db"\u05e7':'\u05db\u05d1\u05d5\u05d3 \u05e7\u05d3\u05d5\u05e9\u05ea\u05d5',
-  // מרן
-  '\u05de\u05e8"\u05df':'\u05de\u05e8\u05e0\u05d5',
-};
+// ── Hebrew abbreviation dictionary (loaded from DB) ─────────────
+var ABBR_DICT = {};  // populated by loadAbbreviations()
+
+async function loadAbbreviations(){
+  try{
+    var r=await fetch('/api/abbreviations');
+    var rows=await r.json();
+    ABBR_DICT={};
+    rows.forEach(function(row){
+      if(row.expansion) ABBR_DICT[row.abbr]=row.expansion;
+      // Also map ״ variant
+      var v=row.abbr.replace(/"/g,'\u05f4');
+      if(v!==row.abbr && row.expansion) ABBR_DICT[v]=row.expansion;
+    });
+  } catch(e){ console.warn('abbr load failed',e); }
+}
 
 var LETTER_NAMES = {
   'א':'אלף','ב':'בית','ג':'גימל',
@@ -983,20 +1057,18 @@ function expandLetterNames(word){
 
 function normalizeForSpeech(text){
   // 1. Replace gershayim words
-  text=text.replace(/([\u05d0-\u05ea]{1,6})["\u05f4]([\u05d0-\u05ea]{1,3})/g,
+  text=text.replace(/([\u05d0-\u05ea]{1,8})["\u05f4]([\u05d0-\u05ea]{1,3})/g,
     function(match){
-      // Dictionary lookup first
-      if(GERSHAYIM_DICT[match])return GERSHAYIM_DICT[match];
+      // DB dictionary lookup first
+      if(ABBR_DICT[match])return ABBR_DICT[match];
       var letters=match.replace(/["\u05f4]/g,'');
       var totalLen=letters.length;
-      // Hebrew year: exactly 4 letters starting with תש / תר / תק / תנ etc.
-      // Pattern: starts with ת and second letter is one of the century letters
+      // Hebrew year: 4 letters starting with ת + century letter
       if(totalLen===4 && letters[0]==='\u05ea' &&
          '\u05e9\u05e8\u05e7\u05e6\u05e0\u05de\u05dc\u05db\u05d9'.indexOf(letters[1])>=0){
-        // It's a year — expand each letter to its name
         return expandLetterNames(letters);
       }
-      // Long acronym (4+ letters, not a year) → just remove gershayim
+      // Long acronym (4+ letters, not a year) → strip gershayim only
       if(totalLen>=4) return letters;
       // Short (2-3 letters) → expand to letter names
       return expandLetterNames(letters);
@@ -1165,12 +1237,7 @@ function beep(freq,dur,vol){
     o.stop(ctx.currentTime+dur);
   }catch(e){}
 }
-function sayHebrew(text){
-  var u=new SpeechSynthesisUtterance(text);
-  u.lang='he-IL'; u.rate=1.1;
-  if(heVoice)u.voice=heVoice;
-  synth.speak(u);
-}
+// sayHebrew defined below (supports optional onEnd callback)
 
 // iOS requires speechSynthesis to be "unlocked" within a user gesture.
 // We do this once per button tap by speaking an empty utterance immediately.
@@ -1299,6 +1366,157 @@ function resetVcBtn(){
 // ── Issue picker via voice ────────────────────────────────────────
 var issuePickerActive=false;
 var issuePickerWasPlaying=false;
+
+// ── Dictionary flow ──────────────────────────────────────────────
+var dictQueue=[];       // abbrevs left to process
+var dictCurrent=null;  // current abbrev being asked about
+var dictPending=null;  // proposed expansion waiting for confirmation
+var dictWasPlaying=false;
+
+function startDictFlow(wasPlaying){
+  dictWasPlaying=wasPlaying;
+  if(wasPlaying) pause();
+  // Fetch unresolved abbreviations
+  fetch('/api/abbreviations?unresolved=1')
+    .then(function(r){return r.json();})
+    .then(function(rows){
+      var count=rows.length;
+      if(count===0){
+        sayHebrew('\u05d0\u05d9\u05df \u05e8\u05d0\u05e9\u05d9 \u05ea\u05d9\u05d1\u05d5\u05ea \u05dc\u05e4\u05d9\u05e2\u05e0\u05d5\u05d7. \u05ea\u05d5\u05d3\u05d4!');
+        return;
+      }
+      dictQueue=rows.slice(); // sorted by count desc from server
+      var intro=
+        '\u05ea\u05d5\u05d3\u05d4 \u05e2\u05dc \u05e2\u05d6\u05e8\u05ea\u05da \u05d1\u05e4\u05d9\u05e2\u05e0\u05d5\u05d7 \u05e8\u05d0\u05e9\u05d9 \u05ea\u05d9\u05d1\u05d5\u05ea. '+  // תודה על עזרתך בפיענוח ראשי תיבות.
+        '\u05d9\u05e9 \u05dc\u05d9 '+count+' \u05e8\u05d0\u05e9\u05d9 \u05ea\u05d9\u05d1\u05d5\u05ea \u05dc\u05d0 \u05de\u05e4\u05d5\u05e2\u05e0\u05d7\u05d9\u05dd. '+  // יש לי X ראשי תיבות לא מפוענחים.
+        '\u05d0\u05e0\u05d9 \u05d0\u05e7\u05e8\u05d9\u05d0 \u05dc\u05da \u05db\u05dc \u05e4\u05e2\u05dd \u05d1\u05d9\u05d8\u05d5\u05d9 \u05d0\u05d7\u05d3, \u05d5\u05d0\u05ea\u05d4 \u05ea\u05d2\u05d9\u05d3 \u05dc\u05d9 \u05d1\u05de\u05d4 \u05dc\u05d4\u05d7\u05dc\u05d9\u05e3 \u05d0\u05d5\u05ea\u05d5. '+  // אני אקריא לך כל פעם ביטוי אחד, ואתה תגיד לי במה להחליף אותו.
+        '\u05dc\u05d3\u05dc\u05d2 \u05e2\u05dc \u05d1\u05d9\u05d8\u05d5\u05d9 \u05d0\u05de\u05d5\u05e8 \u05d3\u05dc\u05d2. '+  // לדלג על ביטוי אמור דלג.
+        '\u05dc\u05e1\u05d9\u05d5\u05dd \u05d0\u05de\u05d5\u05e8 \u05de\u05e1\u05e4\u05d9\u05e7. '+  // לסיום אמור מספיק.
+        '\u05d0\u05e4\u05e9\u05e8 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc?';  // אפשר להתחיל?
+      sayHebrew(intro, function(){ dictListenYesNo(); });
+    });
+}
+
+function dictListenYesNo(){
+  // Listen for כן/לא to start
+  dictListenOnce(function(heard){
+    var h=normH(heard);
+    if(/\u05dc\u05d0/.test(h)){
+      // לא — exit
+      dictEnd();
+    } else {
+      // כן or anything else — start
+      dictAskNext();
+    }
+  });
+}
+
+function dictAskNext(){
+  if(!dictQueue.length){
+    sayHebrew('\u05e1\u05d9\u05d9\u05de\u05e0\u05d5. \u05ea\u05d5\u05d3\u05d4!', function(){ dictEnd(); });
+    return;
+  }
+  dictCurrent=dictQueue.shift();
+  dictPending=null;
+  var spoken=expandLetterNames(dictCurrent.abbr.replace(/["\u05f4]/g,''));
+  sayHebrew('\u05de\u05d4 \u05d6\u05d4 '+spoken+'?', function(){ dictListenAnswer(); });
+}
+
+function dictListenAnswer(){
+  dictListenOnce(function(heard){
+    var h=normH(heard);
+    // Stop commands
+    if(/\u05de\u05e1\u05e4\u05d9\u05e7|\u05d6\u05d4\u05d5|\u05d3\u05d9/.test(h)){
+      sayHebrew('\u05d1\u05e1\u05d3\u05e8. \u05ea\u05d5\u05d3\u05d4!', function(){ dictEnd(); });
+      return;
+    }
+    // Skip commands
+    if(/\u05d3\u05dc\u05d2|\u05e2\u05d1\u05d5\u05e8|\u05d4\u05dc\u05d0\u05d4/.test(h)){
+      dictAskNext();
+      return;
+    }
+    // Meaningful answer — propose it
+    dictPending=heard.trim();
+    var spoken=expandLetterNames(dictCurrent.abbr.replace(/["\u05f4]/g,''));
+    sayHebrew(spoken+' \u05d6\u05d4 '+dictPending+'?', function(){ dictListenConfirm(); });
+  });
+}
+
+function dictListenConfirm(){
+  dictListenOnce(function(heard){
+    var h=normH(heard);
+    if(/^\u05db\u05df$|\u05d1\u05e1\u05d3\u05e8|\u05e0\u05db\u05d5\u05df|\u05d0\u05d5\u05e7\u05d9/.test(h)){
+      // כן — save and move on
+      fetch('/api/abbreviations/update',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({abbr:dictCurrent.abbr, expansion:dictPending})
+      }).then(function(){
+        // Update in-memory dict immediately
+        ABBR_DICT[dictCurrent.abbr]=dictPending;
+        var v=dictCurrent.abbr.replace(/"/g,'\u05f4');
+        if(v!==dictCurrent.abbr) ABBR_DICT[v]=dictPending;
+        dictAskNext();
+      });
+    } else if(/\u05dc\u05d0/.test(h)){
+      // לא — ask again
+      var spoken=expandLetterNames(dictCurrent.abbr.replace(/["\u05f4]/g,''));
+      sayHebrew('\u05d0\u05d6 \u05de\u05d4 \u05d6\u05d4 '+spoken+'?', function(){ dictListenAnswer(); });
+    } else {
+      // Unclear — treat as new answer
+      dictPending=heard.trim();
+      var spoken=expandLetterNames(dictCurrent.abbr.replace(/["\u05f4]/g,''));
+      sayHebrew(spoken+' \u05d6\u05d4 '+dictPending+'?', function(){ dictListenConfirm(); });
+    }
+  });
+}
+
+function dictEnd(){
+  dictQueue=[];
+  dictCurrent=null;
+  dictPending=null;
+  if(dictWasPlaying) resume();
+  resetVcBtn();
+}
+
+// sayHebrew with onEnd callback
+function sayHebrew(text, onEnd){
+  synth.cancel();
+  var u=new SpeechSynthesisUtterance(text);
+  u.lang='he-IL'; u.rate=rate;
+  if(heVoice) u.voice=heVoice;
+  if(onEnd) u.onend=onEnd;
+  synth.speak(u);
+}
+
+// Listen once — used in dict flow (no button press needed, auto-starts)
+function dictListenOnce(callback){
+  if(!SpeechRec){ callback(''); return; }
+  if(rec){rec.abort();rec=null;}
+  var r2=new SpeechRec();
+  r2.lang='he-IL'; r2.interimResults=true; r2.maxAlternatives=4;
+  var handled=false;
+  var silT=null;
+  var tout=setTimeout(function(){
+    if(!handled){ handled=true; if(r2)r2.abort(); callback(''); }
+  },8000);
+  function fin(heard){
+    if(handled)return; handled=true;
+    clearTimeout(tout); clearTimeout(silT);
+    if(r2){r2.abort();r2=null;}
+    callback(heard);
+  }
+  r2.onresult=function(e){
+    var res=e.results[e.results.length-1];
+    var heard=Array.from(res).map(function(a){return a.transcript.trim();}).join(' ');
+    if(res.isFinal){ fin(heard); }
+    else { clearTimeout(silT); silT=setTimeout(function(){fin(heard);},1500); }
+  };
+  r2.onerror=function(e){ if(!handled){handled=true;clearTimeout(tout);clearTimeout(silT);callback('');} };
+  r2.onend=function(){};
+  var voDelay=/iPhone|iPad/.test(navigator.userAgent)?900:80;
+  setTimeout(function(){ try{r2.start();}catch(e){} },voDelay);
+}
 
 function startIssuePicker(wasPlaying){
   issuePickerActive=true;
@@ -1521,6 +1739,11 @@ function handleCmd(heard, wasPlaying){
       label='\u05dc\u05d0 \u05e0\u05de\u05e6\u05d0'; noEcho=false;
       sayHebrew('\u05e7\u05d8\u05e2 \u05db\u05d6\u05d4 \u05dc\u05d0 \u05e7\u05d9\u05d9\u05dd');
     }
+  }
+  // ── מילון ראשי תיבות
+  else if(/\u05de\u05d9\u05dc\u05d5\u05df/.test(h)){
+    done=true; label='\u05de\u05d9\u05dc\u05d5\u05df'; noEcho=true;
+    startDictFlow(wasPlaying);
   }
   // ── עזרה / הסבר / הוראות
   else if(/\u05e2\u05d6\u05e8\u05d4|\u05d4\u05e1\u05d1\u05e8|\u05d4\u05d5\u05e8\u05d0\u05d5\u05ea|\u05d4\u05e1\u05d1\u05e8\u05d9\u05dd/.test(h)){
