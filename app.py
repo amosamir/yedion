@@ -1399,12 +1399,14 @@ function startDictFlow(wasPlaying){
 }
 
 function dictListenYesNo(){
-  // Advance unless user explicitly says no/stop
   dictListenOnce(function(heard){
     var h=normH(heard);
-    if(/\u05dc\u05d0|\u05e2\u05e6\u05d5\u05e8|\u05de\u05e1\u05e4\u05d9\u05e7|\u05d3\u05d9/.test(h) && h.length<8){
-      // לא / עצור / מספיק / די — exit
+    // Explicit negative → exit
+    if(heard && /\u05dc\u05d0|\u05e2\u05e6\u05d5\u05e8|\u05de\u05e1\u05e4\u05d9\u05e7|\u05d3\u05d9/.test(h) && h.length<8){
       dictEnd();
+    // Empty (timeout/no-speech) → repeat prompt once more
+    } else if(!heard.trim()){
+      sayHebrew('\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc.', function(){ dictListenYesNo(); });
     } else {
       dictAskNext();
     }
@@ -1481,61 +1483,78 @@ function dictEnd(){
 
 // sayHebrew with onEnd callback
 function sayHebrew(text, onEnd){
-  // When no callback: cancel any current speech and speak immediately
-  // When callback given: DO NOT cancel — just enqueue and wait for real end
-  if(!onEnd) synth.cancel();
+  if(!onEnd){ synth.cancel(); }
   var u=new SpeechSynthesisUtterance(text);
   u.lang='he-IL'; u.rate=rate;
   if(heVoice) u.voice=heVoice;
   if(onEnd){
     var fired=false;
-    var fallbackTimer=null;
+    var pollId=null;
     function fire(){
-      if(fired) return;
-      fired=true;
-      clearTimeout(fallbackTimer);
-      // Small delay so synth queue fully clears before mic opens
-      setTimeout(onEnd, 400);
+      if(fired) return; fired=true;
+      clearInterval(pollId);
+      setTimeout(onEnd, 500);
     }
-    u.onend=fire;
-    u.onerror=function(e){ if(e.error!=='interrupted') fire(); };
-    // Fallback: estimate speech duration (~65ms per char at rate=1, +1s buffer)
-    var estMs=Math.max(3000, Math.round(text.length * 65 / rate) + 1000);
-    fallbackTimer=setTimeout(fire, estMs);
+    // Poll: wait until synth is no longer speaking
+    pollId=setInterval(function(){
+      if(!synth.speaking && !synth.pending) fire();
+    }, 200);
+    // Hard fallback
+    var estMs=Math.max(4000, Math.round(text.length * 75 / rate) + 2000);
+    setTimeout(fire, estMs);
   }
   synth.speak(u);
+}
+
+// Show debug text under vcbtn during dict flow
+function dictDebug(txt){
+  var el=document.getElementById('vcmsg');
+  if(el) el.textContent=txt;
 }
 
 // Listen once — used in dict flow (no button press needed, auto-starts)
 function dictListenOnce(callback){
   if(!SpeechRec){ callback(''); return; }
   if(rec){rec.abort();rec=null;}
+  dictDebug('\u05de\u05d0\u05d6\u05d9\u05df...');  // מאזין...
   var r2=new SpeechRec();
   r2.lang='he-IL'; r2.interimResults=true; r2.maxAlternatives=4;
   var handled=false;
   var silT=null;
   var tout=setTimeout(function(){
-    if(!handled){ handled=true; if(r2){r2.abort();r2=null;} callback(''); }
-  },8000);
+    if(!handled){
+      handled=true;
+      if(r2){r2.abort();r2=null;}
+      dictDebug('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9');  // לא שמעתי
+      callback('');
+    }
+  },15000);
   function fin(heard){
     if(handled)return; handled=true;
     clearTimeout(tout); clearTimeout(silT);
     if(r2){r2.abort();r2=null;}
+    dictDebug('\u05e9\u05de\u05e2\u05ea\u05d9: '+heard);  // שמעתי: ...
     callback(heard);
   }
   r2.onresult=function(e){
     var res=e.results[e.results.length-1];
     var heard=Array.from(res).map(function(a){return a.transcript.trim();}).join(' ');
+    dictDebug('\u05e9\u05de\u05e2\u05ea\u05d9: '+heard);
     if(res.isFinal){ fin(heard); }
     else { clearTimeout(silT); silT=setTimeout(function(){fin(heard);},1500); }
   };
-  r2.onerror=function(e){ if(!handled){handled=true;clearTimeout(tout);clearTimeout(silT);if(r2){r2.abort();r2=null;}callback('');} };
+  r2.onerror=function(e){
+    if(!handled){
+      handled=true; clearTimeout(tout); clearTimeout(silT);
+      if(r2){r2.abort();r2=null;}
+      dictDebug('\u05e9\u05d2\u05d9\u05d0\u05ea \u05de\u05d9\u05e7\u05e8\u05d5\u05e4\u05d5\u05df: '+e.error);
+      callback('');
+    }
+  };
   r2.onend=function(){};
-  var voDelay=/iPhone|iPad/.test(navigator.userAgent)?900:80;
-  setTimeout(function(){
-    synth.cancel(); // make sure TTS is done before mic opens
-    setTimeout(function(){ try{r2.start();}catch(e){} }, 150);
-  }, voDelay);
+  synth.cancel();
+  var voDelay=/iPhone|iPad/.test(navigator.userAgent)?900:200;
+  setTimeout(function(){ try{r2.start();}catch(e){ dictDebug('start error: '+e); } }, voDelay);
 }
 
 function startIssuePicker(wasPlaying){
