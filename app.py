@@ -1488,20 +1488,10 @@ function sayHebrew(text, onEnd){
   u.lang='he-IL'; u.rate=rate;
   if(heVoice) u.voice=heVoice;
   if(onEnd){
-    var fired=false;
-    var pollId=null;
-    function fire(){
-      if(fired) return; fired=true;
-      clearInterval(pollId);
-      setTimeout(onEnd, 500);
-    }
-    // Poll: wait until synth is no longer speaking
-    pollId=setInterval(function(){
-      if(!synth.speaking && !synth.pending) fire();
-    }, 200);
-    // Hard fallback
-    var estMs=Math.max(4000, Math.round(text.length * 75 / rate) + 2000);
-    setTimeout(fire, estMs);
+    // Estimate duration and fire callback after speech completes
+    // Hebrew TTS ~70ms/char at rate=1, +1.5s safety margin
+    var estMs=Math.max(3000, Math.round(text.length * 70 / rate) + 1500);
+    setTimeout(onEnd, estMs);
   }
   synth.speak(u);
 }
@@ -1511,8 +1501,6 @@ function dictDebug(txt){
   var el=document.getElementById('vcmsg');
   if(el) el.textContent=txt;
 }
-
-// Listen once — used in dict flow (no button press needed, auto-starts)
 function dictListenOnce(callback){
   if(!SpeechRec){ callback(''); return; }
   if(rec){rec.abort();rec=null;}
@@ -1552,8 +1540,9 @@ function dictListenOnce(callback){
     }
   };
   r2.onend=function(){};
-  synth.cancel();
-  var voDelay=/iPhone|iPad/.test(navigator.userAgent)?900:200;
+  // Don't cancel synth here — TTS already done by the time callback fires
+  // Extra delay so any TTS tail doesn't get picked up by mic
+  var voDelay=/iPhone|iPad/.test(navigator.userAgent)?1200:800;
   setTimeout(function(){ try{r2.start();}catch(e){ dictDebug('start error: '+e); } }, voDelay);
 }
 
