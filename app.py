@@ -119,9 +119,6 @@ def upsert_abbreviations(counts: dict):
             ON CONFLICT (abbr) DO UPDATE SET count = abbreviations.count + EXCLUDED.count
         """, (abbr, cnt))
     conn.commit(); cur.close(); conn.close()
-    conn.commit()
-    cur.close()
-    conn.close()
 
 # ─── PDF PROCESSING ──────────────────────────────────────────────────────────
 
@@ -2245,198 +2242,216 @@ h1{font-size:28px;font-weight:900;margin-bottom:4px}
   border-radius:10px;font-family:'Heebo',sans-serif;font-weight:700;font-size:14px;
   cursor:pointer;white-space:nowrap}
 .add-btn:hover{opacity:.9}
-.stats{font-size:13px;color:var(--muted)}
+.save-all-btn{padding:9px 20px;background:#1a6b3f;color:#fff;border:none;
+  border-radius:10px;font-family:'Heebo',sans-serif;font-weight:700;font-size:14px;
+  cursor:pointer;white-space:nowrap;display:none}
+.save-all-btn.vis{display:inline-block}
+.save-all-btn:hover{opacity:.9}
+.stats{font-size:13px;color:var(--muted);flex:1;text-align:left}
+.section-hdr{background:#f0ede8;font-size:12px;font-weight:700;color:var(--muted);
+  padding:7px 14px}
 table{width:100%;border-collapse:collapse;background:var(--surface);
-  border-radius:var(--r);overflow:hidden;border:1px solid var(--border)}
+  border-radius:var(--r);overflow:hidden;border:1px solid var(--border);margin-bottom:20px}
 thead th{padding:11px 14px;font-size:12px;font-weight:700;color:var(--muted);
   text-align:right;background:#faf8f4;border-bottom:1px solid var(--border)}
 tbody tr{border-bottom:1px solid #f0ede8;transition:background .1s}
 tbody tr:last-child{border-bottom:none}
 tbody tr:hover{background:#faf8f4}
-tbody tr.new-row{background:#fffff0}
-td{padding:9px 14px;font-size:14px;vertical-align:middle}
-td.td-abbr{font-weight:700;white-space:nowrap;width:120px}
-td.td-exp{min-width:200px}
-td.td-count{width:70px;text-align:center;color:var(--muted);font-size:13px}
-td.td-act{width:110px;white-space:nowrap}
+tbody tr.dirty{background:#fffbea}
+tbody tr.new-row{background:#f0fff4}
+td{padding:7px 12px;font-size:14px;vertical-align:middle}
+td.td-abbr{font-weight:700;white-space:nowrap;width:110px}
+td.td-exp{min-width:160px}
+td.td-count{width:65px;text-align:center;color:var(--muted);font-size:13px}
+td.td-act{width:90px;white-space:nowrap;text-align:center}
 .cell-input{width:100%;border:1px solid transparent;border-radius:6px;
   padding:4px 8px;font-family:'Heebo',sans-serif;font-size:14px;color:var(--text);
-  background:transparent;cursor:text}
+  background:transparent;cursor:text;transition:border-color .15s,background .15s}
 .cell-input:focus{border-color:var(--green);background:#fff;outline:none}
 .cell-input.abbr-input{font-weight:700}
-.save-row-btn{padding:5px 12px;background:var(--green);color:#fff;border:none;
-  border-radius:7px;font-family:'Heebo',sans-serif;font-weight:700;font-size:12px;
-  cursor:pointer;margin-left:6px}
-.save-row-btn:hover{opacity:.9}
-.del-row-btn{padding:5px 10px;background:transparent;border:1px solid #e0c0c0;
+.cell-input:not(:focus):hover{background:#f5f5f0}
+.del-row-btn{padding:4px 10px;background:transparent;border:1px solid #e0c0c0;
   border-radius:7px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer}
 .del-row-btn:hover{background:var(--red-light)}
-.flash{font-size:11px;color:var(--green);margin-right:6px;display:none}
+.ltr-char{font-size:22px;font-weight:700;text-align:center;line-height:1}
 .empty{padding:40px;text-align:center;color:var(--muted);font-size:15px}
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+  background:var(--green);color:#fff;padding:12px 28px;border-radius:99px;
+  font-weight:700;font-size:15px;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
 </style>
 </head>
 <body>
 <div class="wrap">
   <a href="/admin" class="back">← חזרה לניהול</a>
   <h1>מילון ראשי תיבות</h1>
-  <p class="sub">עריכה, הוספה ומחיקה של ראשי תיבות</p>
+  <p class="sub">עריכה, הוספה ומחיקה. שינויים מסומנים בצהוב — לחץ "שמור הכל" לשמירה.</p>
 
   <div class="toolbar">
     <input type="search" id="search" placeholder="חיפוש..." oninput="filterRows()">
     <button class="add-btn" onclick="addRow()">+ הוסף ביטוי</button>
+    <button class="save-all-btn" id="saveAllBtn" onclick="saveAll()">💾 שמור הכל</button>
     <span class="stats" id="stats"></span>
   </div>
 
-  <table id="tbl">
-    <thead>
-      <tr>
-        <th>ראשי תיבות</th>
-        <th>טקסט חלופי</th>
-        <th>מופעים</th>
-        <th>פעולות</th>
-      </tr>
-    </thead>
-    <tbody id="tbody"></tbody>
-  </table>
+  <div id="tables"></div>
 </div>
+<div id="toast"></div>
 
 <script>
 var rows=[];
+var dirty=new Set(); // origAbbr keys that changed
+
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
 async function load(){
   var r=await fetch('/api/abbreviations');
   rows=await r.json();
-  renderTable(rows);
+  dirty.clear();
+  renderAll(rows);
 }
 
-function renderTable(data){
-  var q=(document.getElementById('search').value||'').trim();
+function renderAll(data){
+  var q=(document.getElementById('search').value||'').trim().toLowerCase();
   var letters=data.filter(function(r){return r.abbr.startsWith('__');});
   var abbrevs=data.filter(function(r){return !r.abbr.startsWith('__');});
-
-  var filtered=(q?abbrevs.filter(function(r){
-    return r.abbr.includes(q)||(r.expansion||'').includes(q);
-  }):abbrevs);
-  var filteredL=(q?letters.filter(function(r){
-    return r.abbr.slice(2).includes(q)||(r.expansion||'').includes(q);
-  }):letters);
-
+  var fA=q?abbrevs.filter(function(r){return r.abbr.toLowerCase().includes(q)||(r.expansion||'').includes(q);}):abbrevs;
+  var fL=q?letters.filter(function(r){return r.abbr.slice(2).includes(q)||(r.expansion||'').includes(q);}):letters;
   var unresolved=abbrevs.filter(function(r){return !r.expansion;}).length;
   document.getElementById('stats').textContent=
-    filtered.length+' ראשי תיבות'+
-    (unresolved?' | '+unresolved+' ממתינים לפיענוח':'')+
-    ' | '+filteredL.length+' שמות אותיות';
-
-  var tb=document.getElementById('tbody');
-  tb.innerHTML='';
-
-  if(!filtered.length && !filteredL.length){
-    tb.innerHTML='<tr><td colspan="4" class="empty">אין תוצאות</td></tr>';
-    return;
-  }
-
-  // Abbreviations section
-  if(filtered.length){
-    var hdr=document.createElement('tr');
-    hdr.innerHTML='<td colspan="4" style="background:#f0ede8;font-size:12px;font-weight:700;color:var(--muted);padding:7px 14px">ראשי תיבות</td>';
-    tb.appendChild(hdr);
-    filtered.forEach(function(row){
-      tb.appendChild(makeRow(row.abbr, row.expansion||'', row.count, false, false));
-    });
-  }
-
-  // Letter names section
-  if(filteredL.length){
-    var hdr2=document.createElement('tr');
-    hdr2.innerHTML='<td colspan="4" style="background:#f0ede8;font-size:12px;font-weight:700;color:var(--muted);padding:7px 14px">שמות אותיות</td>';
-    tb.appendChild(hdr2);
-    filteredL.forEach(function(row){
-      tb.appendChild(makeRow(row.abbr, row.expansion||'', row.count, false, true));
-    });
-  }
+    fA.length+' ראשי תיבות'+(unresolved?' ('+unresolved+' ממתינים)':'')+
+    ' | '+fL.length+' שמות אותיות';
+  var container=document.getElementById('tables');
+  container.innerHTML='';
+  if(fA.length) container.appendChild(buildTable('ראשי תיבות', fA, false));
+  if(fL.length) container.appendChild(buildTable('שמות אותיות', fL, true));
 }
 
-function makeRow(abbr, expansion, count, isNew, isLetter){
+function buildTable(title, data, isLetters){
+  var tbl=document.createElement('table');
+  tbl.innerHTML='<thead><tr>'+
+    '<th>'+(isLetters?'אות':'ראשי תיבות')+'</th>'+
+    '<th>'+(isLetters?'הגייה':'פיענוח')+'</th>'+
+    (isLetters?'':'<th>מופעים</th>')+
+    '<th></th>'+
+    '</tr></thead>';
+  var hdr=document.createElement('tr');
+  hdr.innerHTML='<td colspan="'+(isLetters?3:4)+'" class="section-hdr">'+title+'</td>';
+  var tb=document.createElement('tbody');
+  tb.appendChild(hdr);
+  data.forEach(function(row){ tb.appendChild(makeRow(row,isLetters,false)); });
+  tbl.appendChild(tb);
+  return tbl;
+}
+
+function makeRow(rowData, isLetter, isNew){
+  var abbr=rowData.abbr, expansion=rowData.expansion||'', count=rowData.count||0;
   var tr=document.createElement('tr');
   if(isNew) tr.classList.add('new-row');
   tr.dataset.origAbbr=abbr;
+  tr.dataset.isLetter=isLetter?'1':'0';
 
-  var displayAbbr=isLetter ? abbr.slice(2) : abbr;
-  var abbrCell=isLetter
-    ? '<td class="td-abbr" style="text-align:center;font-size:20px">'+esc(displayAbbr)+'<input type="hidden" value="'+esc(abbr)+'"></td>'
-    : '<td class="td-abbr"><input class="cell-input abbr-input" value="'+esc(abbr)+'" '+(isNew?'':'readonly')+' placeholder="ביטוי"></td>';
+  var abbrCell, countCell, delBtn;
+  if(isLetter){
+    abbrCell='<td class="td-abbr"><div class="ltr-char">'+esc(abbr.slice(2))+'</div></td>';
+    countCell='';
+    delBtn='';
+  } else {
+    abbrCell='<td class="td-abbr"><input class="cell-input abbr-input" data-field="abbr"'+(isNew?'':' readonly')+' value="'+esc(abbr)+'" placeholder="ביטוי" oninput="markDirty(this)"></td>';
+    countCell='<td class="td-count"><input class="cell-input" data-field="count" type="number" min="0" value="'+count+'" style="text-align:center" oninput="markDirty(this)"></td>';
+    delBtn='<button class="del-row-btn" onclick="delRow(this)">מחק</button>';
+  }
 
   tr.innerHTML=abbrCell+
-    '<td class="td-exp"><input class="cell-input" value="'+esc(expansion)+'" placeholder="'+(isLetter?'שם ההגייה':'טקסט חלופי')+'"></td>'+
-    '<td class="td-count">'+(isLetter?'—':'<input class="cell-input" style="text-align:center" value="'+count+'" placeholder="0" type="number" min="0">')+'</td>'+
-    '<td class="td-act">'+
-      '<span class="flash">✓ נשמר</span>'+
-      '<button class="save-row-btn" onclick="saveRow(this)">שמור</button>'+
-      (isLetter?'':'<button class="del-row-btn" onclick="delRow(this)">מחק</button>')+
-    '</td>';
+    '<td class="td-exp"><input class="cell-input" data-field="expansion" value="'+esc(expansion)+'" placeholder="'+(isLetter?'הגייה':'פיענוח')+'" oninput="markDirty(this)"></td>'+
+    countCell+
+    '<td class="td-act">'+delBtn+'</td>';
   return tr;
 }
 
-function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
-
-function filterRows(){ renderTable(rows); }
-
-function addRow(){
-  var tb=document.getElementById('tbody');
-  var tr=makeRow('','',0,true);
-  tb.insertBefore(tr, tb.firstChild);
-  tr.querySelector('.abbr-input').focus();
+function markDirty(input){
+  var tr=input.closest('tr');
+  tr.classList.add('dirty');
+  dirty.add(tr.dataset.origAbbr);
+  document.getElementById('saveAllBtn').classList.add('vis');
 }
 
-async function saveRow(btn){
-  var tr=btn.closest('tr');
-  var origAbbr=tr.dataset.origAbbr;
-  var isLetter=origAbbr.startsWith('__');
+function filterRows(){ renderAll(rows); }
 
-  var expansion, abbr, count;
-  if(isLetter){
-    abbr=origAbbr;
-    expansion=tr.querySelectorAll('input')[1].value.trim();
-    count=0;
-  } else {
-    var inputs=tr.querySelectorAll('input[type!=hidden]');
-    abbr=inputs[0].value.trim();
-    expansion=inputs[1].value.trim();
-    count=parseInt(inputs[2]&&inputs[2].value)||0;
-    if(!abbr){ alert('נא להזין ביטוי'); return; }
-    if(origAbbr && origAbbr!==abbr){
-      await fetch('/api/abbreviations/delete',{method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({abbr:origAbbr})});
-    }
+function addRow(){
+  // Add to top of first table or create one
+  var firstTb=document.querySelector('#tables table tbody');
+  if(!firstTb){
+    // No table yet — render empty table
+    document.getElementById('tables').innerHTML='<table><thead><tr><th>ראשי תיבות</th><th>פיענוח</th><th>מופעים</th><th></th></tr></thead><tbody id="newTb"></tbody></table>';
+    firstTb=document.getElementById('newTb');
   }
+  var tr=makeRow({abbr:'',expansion:'',count:0},false,true);
+  firstTb.insertBefore(tr, firstTb.children[0]);
+  tr.querySelector('[data-field=abbr]').focus();
+  tr.classList.add('dirty');
+  document.getElementById('saveAllBtn').classList.add('vis');
+}
 
-  await fetch('/api/abbreviations/save',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({abbr:abbr, expansion:expansion, count:count})});
+async function saveAll(){
+  var btn=document.getElementById('saveAllBtn');
+  btn.textContent='שומר...'; btn.disabled=true;
+  var trs=document.querySelectorAll('tbody tr[data-orig-abbr]');
+  var promises=[];
+  trs.forEach(function(tr){
+    if(!tr.classList.contains('dirty') && !tr.classList.contains('new-row')) return;
+    var origAbbr=tr.dataset.origAbbr;
+    var isLetter=tr.dataset.isLetter==='1';
+    var expansion=(tr.querySelector('[data-field=expansion]')||{value:''}).value.trim();
+    if(isLetter){
+      promises.push(fetch('/api/abbreviations/save',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({abbr:origAbbr, expansion:expansion, count:0})}));
+    } else {
+      var abbrInput=tr.querySelector('[data-field=abbr]');
+      var abbr=abbrInput?abbrInput.value.trim():origAbbr;
+      if(!abbr) return;
+      var count=parseInt((tr.querySelector('[data-field=count]')||{value:0}).value)||0;
+      var p=Promise.resolve();
+      if(origAbbr && origAbbr!==abbr && origAbbr!==''){
+        p=fetch('/api/abbreviations/delete',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({abbr:origAbbr})});
+      }
+      promises.push(p.then(function(){
+        return fetch('/api/abbreviations/save',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({abbr:abbr, expansion:expansion, count:count})});
+      }));
+    }
+  });
+  await Promise.all(promises);
+  btn.textContent='💾 שמור הכל'; btn.disabled=false;
+  btn.classList.remove('vis');
+  showToast('נשמר!');
+  await load();
+}
 
-  tr.dataset.origAbbr=abbr;
-  tr.classList.remove('new-row');
-  if(!isLetter){ var ai=tr.querySelector('.abbr-input'); if(ai) ai.readOnly=true; }
-  var flash=tr.querySelector('.flash');
-  flash.style.display='inline'; setTimeout(function(){flash.style.display='none';},2000);
+async function delRow(btn){
+  var tr=btn.closest('tr');
+  var abbr=tr.dataset.origAbbr;
+  if(abbr && abbr!=='' && !confirm('למחוק את "'+abbr+'"?')) return;
+  if(abbr && abbr!==''){
+    await fetch('/api/abbreviations/delete',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({abbr:abbr})});
+  }
+  tr.remove();
   var r=await fetch('/api/abbreviations'); rows=await r.json();
   document.getElementById('stats').textContent=
     rows.filter(function(r){return !r.abbr.startsWith('__');}).length+' ראשי תיבות | '+
     rows.filter(function(r){return !r.abbr.startsWith('__')&&!r.expansion;}).length+' ממתינים';
 }
 
-async function delRow(btn){
-  var tr=btn.closest('tr');
-  var abbr=tr.dataset.origAbbr;
-  if(abbr && !confirm('למחוק את "'+abbr+'"?')) return;
-  if(abbr){
-    await fetch('/api/abbreviations/delete',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({abbr:abbr})});
-    var r=await fetch('/api/abbreviations'); rows=await r.json();
-  }
-  tr.remove();
+function showToast(msg){
+  var t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(function(){t.classList.remove('show');},2200);
 }
 
 load();
