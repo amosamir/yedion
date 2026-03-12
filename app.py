@@ -1137,15 +1137,14 @@ function expandLetterNames(word){
 function normalizeForSpeech(text){
   // 0. Normalize time expressions: 26:17 → "שש עשרה עשרים ושש" (hours:minutes)
   //    Pattern: digits:digits where right side is 0-59 (minutes)
-  text=text.replace(/\b(\d{1,2}):(\d{2})\b/g,function(m,h,min){
-    var hNum=parseInt(h,10), mNum=parseInt(min,10);
-    // Only treat as time if both parts are plausible (h<24, m<60)
+  text=text.replace(/\b(\d{1,2}):(\d{1,2})\b/g,function(m,a,b){
+    var hNum=parseInt(b,10), mNum=parseInt(a,10);
     if(hNum>=24||mNum>=60) return m;
     var heHours=['אפס','אחת','שתיים','שלוש','ארבע','חמש','שש','שבע','שמונה','תשע','עשר',
       'אחת עשרה','שתים עשרה','שלוש עשרה','ארבע עשרה','חמש עשרה','שש עשרה',
       'שבע עשרה','שמונה עשרה','תשע עשרה','עשרים','עשרים ואחת','עשרים ושתיים',
       'עשרים ושלוש'];
-    var heMinutes=['אפס אפס','ואחת','ושתיים','ושלוש','וארבע','וחמש','ושש','ושבע',
+    var heMinutes=['','ואחת','ושתיים','ושלוש','וארבע','וחמש','ושש','ושבע',
       'ושמונה','ותשע','ועשר','ואחת עשרה','ושתים עשרה','ושלוש עשרה','וארבע עשרה',
       'וחמש עשרה','ושש עשרה','ושבע עשרה','ושמונה עשרה','ותשע עשרה','ועשרים',
       'ועשרים ואחת','ועשרים ושתיים','ועשרים ושלוש','ועשרים וארבע','ועשרים וחמש',
@@ -1157,7 +1156,7 @@ function normalizeForSpeech(text){
       'וארבעים ושמונה','וארבעים ותשע','וחמישים','וחמישים ואחת',
       'וחמישים ושתיים','וחמישים ושלוש','וחמישים וארבע','וחמישים וחמש',
       'וחמישים ושש','וחמישים ושבע','וחמישים ושמונה','וחמישים ותשע'];
-    var hStr=hNum<heHours.length?heHours[hNum]:h;
+    var hStr=hNum<heHours.length?heHours[hNum]:String(hNum);
     var mStr=mNum===0?'':' '+heMinutes[mNum];
     return hStr+mStr;
   });
