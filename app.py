@@ -89,8 +89,23 @@ def init_db():
     conn.close()
 
 # ─── Abbreviation detection (for PDF upload) ─────────────────────────────────
-# Gershayim variants: regular " (U+0022) and Hebrew gershayim ״ (U+05F4)
-_ABBR_RE = re.compile(r'[\u05d0-\u05ea]+["\u05f4][\u05d0-\u05ea]+')
+# Gershayim (״ or ") must appear before the LAST letter: e.g. צה"ל — valid; מ"שהו — invalid
+# Geresh (׳ or ') after a single letter: ר' → valid abbreviation
+_GERSHAYIM_RE = re.compile(r'[\u05d0-\u05ea]+["\u05f4][\u05d0-\u05ea]+')
+_GERESH_RE    = re.compile(r'(?<!\S)([\u05d0-\u05ea])[\'\u05f3](?=\s|$)')
+
+def _gershayim_valid(word: str) -> bool:
+    """Gershayim is valid only when it appears before the last letter (standard acronym)."""
+    # Strip gershayim chars and find position
+    for g in ('"', '\u05f4'):
+        idx = word.find(g)
+        if idx != -1:
+            letters_after = word[idx+1:]
+            # Valid: exactly one Hebrew letter after gershayim
+            if len(letters_after) == 1 and '\u05d0' <= letters_after <= '\u05ea':
+                return True
+            return False
+    return False
 
 def _is_hebrew_year(word: str) -> bool:
     """4-letter word starting with ת + century letter — it's a year, skip."""
@@ -98,13 +113,22 @@ def _is_hebrew_year(word: str) -> bool:
     return len(word) == 4 and word[0] == '\u05ea' and word[1] in century
 
 def extract_abbreviations(text: str) -> dict:
-    """Return {abbr: count} for all gershayim-words in text (excluding years)."""
+    """Return {abbr: count} for valid acronyms in text (excluding years)."""
     counts = {}
-    for m in _ABBR_RE.finditer(text):
+    # Gershayim words — only if gershayim is before last letter
+    for m in _GERSHAYIM_RE.finditer(text):
         w = m.group(0)
-        if _is_hebrew_year(w.replace('"', '').replace('\u05f4', '')):
+        if not _gershayim_valid(w):
+            continue
+        letters = w.replace('"', '').replace('\u05f4', '')
+        if _is_hebrew_year(letters):
             continue
         counts[w] = counts.get(w, 0) + 1
+    # Geresh after single letter: ר׳ / ר'
+    for m in _GERESH_RE.finditer(text):
+        letter = m.group(1)
+        key = letter + "'"          # store with plain apostrophe
+        counts[key] = counts.get(key, 0) + 1
     return counts
 
 def upsert_abbreviations(counts: dict):
@@ -532,13 +556,20 @@ def rename_segment():
 
 @app.route("/api/abbreviations")
 def get_abbreviations():
-    """Return all abbreviations, sorted by count desc. Optionally filter unresolved."""
+    """Return all abbreviations, sorted: unresolved first, then resolved.
+    Within each group: count DESC, then abbr ASC."""
     only_unresolved = request.args.get("unresolved") == "1"
     conn = get_db(); cur = conn.cursor()
     if only_unresolved:
-        cur.execute("SELECT abbr, expansion, count FROM abbreviations WHERE expansion='' ORDER BY count DESC")
+        cur.execute("""SELECT abbr, expansion, count FROM abbreviations
+                       WHERE expansion='' AND abbr NOT LIKE '\\_\\_%'
+                       ORDER BY count DESC, abbr ASC""")
     else:
-        cur.execute("SELECT abbr, expansion, count FROM abbreviations ORDER BY count DESC")
+        cur.execute("""SELECT abbr, expansion, count FROM abbreviations
+                       ORDER BY
+                         CASE WHEN abbr LIKE '\\_\\_%' THEN 2 ELSE 0 END,
+                         CASE WHEN expansion='' THEN 0 ELSE 1 END,
+                         count DESC, abbr ASC""")
     rows = cur.fetchall()
     cur.close(); conn.close()
     return jsonify([dict(r) for r in rows])
@@ -1106,10 +1137,15 @@ function expandLetterNames(word){
 function normalizeForSpeech(text){
   // 1. Replace gershayim words
   text=text.replace(/([\u05d0-\u05ea]{1,8})["\u05f4]([\u05d0-\u05ea]{1,3})/g,
-    function(match){
+    function(match, pre, post){
+      // Gershayim valid only before last letter (post must be exactly 1 letter)
+      if(post.length!==1){
+        // Invalid position — strip gershayim and return plain letters
+        return pre+post;
+      }
       // DB dictionary lookup first
       if(ABBR_DICT[match])return ABBR_DICT[match];
-      var letters=match.replace(/["\u05f4]/g,'');
+      var letters=pre+post;
       var totalLen=letters.length;
       // Hebrew year: 4 letters starting with ת + century letter
       if(totalLen===4 && letters[0]==='\u05ea' &&
@@ -1121,9 +1157,13 @@ function normalizeForSpeech(text){
       // Short (2-3 letters) → expand to letter names
       return expandLetterNames(letters);
     });
-  // 2. Geresh after single letter: ד' → דלת
+  // 2. Geresh after single letter: ד' → look up in ABBR_DICT first, else letter name
   text=text.replace(/([\u05d0-\u05ea])['\u05f3](?=\s|$)/g,
-    function(m,ch){ return LETTER_NAMES[ch]||ch; });
+    function(m,ch){
+      var key=ch+"'";
+      if(ABBR_DICT[key]) return ABBR_DICT[key];
+      return LETTER_NAMES[ch]||ch;
+    });
   // 3. Single isolated Hebrew letter → letter name
   text=text.replace(/(?<![^\u05d0-\u05ea\s])(^|\s)([\u05d0-\u05ea])(\s|$)/g,
     function(m,pre,ch,post){ return pre+(LETTER_NAMES[ch]||ch)+post; });
