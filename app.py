@@ -524,6 +524,26 @@ def get_abbreviations():
     cur.close(); conn.close()
     return jsonify([dict(r) for r in rows])
 
+@app.route("/api/abbreviations/save", methods=["POST"])
+def save_abbreviation():
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO abbreviations (abbr, expansion, count)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (abbr) DO UPDATE SET expansion=EXCLUDED.expansion, count=EXCLUDED.count
+    """, (data["abbr"], data.get("expansion",""), data.get("count",0)))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/abbreviations/delete", methods=["POST"])
+def delete_abbreviation():
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM abbreviations WHERE abbr=%s", (data["abbr"],))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
 @app.route("/api/abbreviations/update", methods=["POST"])
 def update_abbreviation():
     data = request.json
@@ -816,7 +836,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 </div>
 
 <script>
-var S=null,synth=window.speechSynthesis,utt=null,playing=false,rate=1,heVoice=null;
+var S=null,synth=window.speechSynthesis,utt=null,playing=false,rate=1,heVoice=null,greetingActive=false;
 var currentScreen='blind';
 
 // ── Voices ──────────────────────────────────────────────────────
@@ -896,14 +916,17 @@ async function load(){
       sessionStorage.setItem('greeted','1');
       var seg=S.segments[S.current_position];
       unlockTTS();
+      greetingActive=true;
+      var greetText=
+        '\u05e9\u05dc\u05d5\u05dd. ' +
+        S.issue_title+'. '+
+        '\u05d0\u05e0\u05d7\u05e0\u05d5 \u05d1'+seg.title+'. '+
+        '\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d4\u05e7\u05e9 \u05e2\u05dc \u05de\u05e8\u05db\u05d6 \u05d4\u05de\u05e1\u05da \u05d5\u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc. '+
+        '\u05dc\u05e8\u05e9\u05d9\u05de\u05ea \u05e4\u05e7\u05d5\u05d3\u05d5\u05ea \u05d0\u05de\u05d5\u05e8 \u05e2\u05d6\u05e8\u05d4.';
       setTimeout(function(){
-        sayHebrew(
-          '\u05e9\u05dc\u05d5\u05dd. ' +
-          S.issue_title+'. '+
-          '\u05d0\u05e0\u05d7\u05e0\u05d5 \u05d1'+seg.title+'. '+
-          '\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d4\u05e7\u05e9 \u05e2\u05dc \u05de\u05e8\u05db\u05d6 \u05d4\u05de\u05e1\u05da \u05d5\u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc. '+
-          '\u05dc\u05e8\u05e9\u05d9\u05de\u05ea \u05e4\u05e7\u05d5\u05d3\u05d5\u05ea \u05d0\u05de\u05d5\u05e8 \u05e2\u05d6\u05e8\u05d4.'
-        );
+        sayHebrew(greetText);
+        var estMs=Math.max(3000, Math.round(greetText.length*70)+2000);
+        setTimeout(function(){ greetingActive=false; }, estMs);
       },200);
     }
     document.addEventListener('touchstart',greetOnce,{once:true});
@@ -1262,6 +1285,7 @@ function vcMsg(txt,bright){
 
 function startListen(){
   unlockTTS(); // must be first — unlocks iOS TTS within this user gesture
+  if(greetingActive) return; // don't interrupt greeting
   if(!S){
     sayHebrew('\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05de\u05d9\u05df');
     return;
@@ -1442,21 +1466,20 @@ function dictListenAnswer(){
     // Meaningful answer — propose it
     dictPending=heard.trim();
     var spoken=expandLetterNames(dictCurrent.abbr.replace(/["\u05f4]/g,''));
-    sayHebrew(spoken+' \u05d6\u05d4 '+dictPending+'?', function(){ dictListenConfirm(); });
+    sayHebrew('\u05d4\u05d0\u05dd '+spoken+' \u05d6\u05d4 '+dictPending+'?', function(){ dictListenConfirm(); });
   });
 }
 
 function dictListenConfirm(){
   dictListenOnce(function(heard){
     var h=normH(heard);
-    if(/^\u05db\u05df$|\u05d1\u05e1\u05d3\u05e8|\u05e0\u05db\u05d5\u05df|\u05d0\u05d5\u05e7\u05d9/.test(h)){
-      // כן — save and move on
+    if(/\u05db\u05df|\u05d1\u05e1\u05d3\u05e8|\u05e0\u05db\u05d5\u05df|\u05d0\u05d5\u05e7\u05d9|\u05e0\u05d5|\u05e0\u05e2/.test(h) && !/\u05dc\u05d0/.test(h)){
+      // כן / בסדר / נכון / אוקי — save and move on
       fetch('/api/abbreviations/update',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({abbr:dictCurrent.abbr, expansion:dictPending})
       }).then(function(){
-        // Update in-memory dict immediately
         ABBR_DICT[dictCurrent.abbr]=dictPending;
         var v=dictCurrent.abbr.replace(/"/g,'\u05f4');
         if(v!==dictCurrent.abbr) ABBR_DICT[v]=dictPending;
@@ -1470,7 +1493,7 @@ function dictListenConfirm(){
       // Unclear — treat as new answer
       dictPending=heard.trim();
       var spoken=expandLetterNames(dictCurrent.abbr.replace(/["\u05f4]/g,''));
-      sayHebrew(spoken+' \u05d6\u05d4 '+dictPending+'?', function(){ dictListenConfirm(); });
+      sayHebrew('\u05d4\u05d0\u05dd '+spoken+' \u05d6\u05d4 '+dictPending+'?', function(){ dictListenConfirm(); });
     }
   });
 }
@@ -1510,46 +1533,55 @@ function dictDebug(txt){ var el=document.getElementById('vcmsg'); if(el) el.text
 function dictListenOnce(callback){
   if(!SpeechRec){ callback(''); return; }
   if(rec){rec.abort();rec=null;}
-  dictDebug('\u05de\u05d0\u05d6\u05d9\u05df...');  // מאזין...
+  dictDebug('\u05de\u05d0\u05d6\u05d9\u05df...');
+  beep(880,0.12,0.25); // signal mic is open
   var r2=new SpeechRec();
   r2.lang='he-IL'; r2.interimResults=true; r2.maxAlternatives=4;
   var handled=false;
   var silT=null;
+  var lastHeard='';
   var tout=setTimeout(function(){
     if(!handled){
       handled=true;
       if(r2){r2.abort();r2=null;}
-      dictDebug('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9');  // לא שמעתי
+      dictDebug('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9');
       callback('');
     }
-  },15000);
+  },12000);
   function fin(heard){
     if(handled)return; handled=true;
     clearTimeout(tout); clearTimeout(silT);
     if(r2){r2.abort();r2=null;}
-    dictDebug('\u05e9\u05de\u05e2\u05ea\u05d9: '+heard);  // שמעתי: ...
+    dictDebug('\u05e9\u05de\u05e2\u05ea\u05d9: '+heard);
     callback(heard);
   }
   r2.onresult=function(e){
     var res=e.results[e.results.length-1];
     var heard=Array.from(res).map(function(a){return a.transcript.trim();}).join(' ');
+    lastHeard=heard;
     dictDebug('\u05e9\u05de\u05e2\u05ea\u05d9: '+heard);
-    if(res.isFinal){ fin(heard); }
-    else { clearTimeout(silT); silT=setTimeout(function(){fin(heard);},1500); }
+    if(res.isFinal){
+      fin(heard);
+    } else {
+      // Interim: wait for 2s silence before finalizing
+      clearTimeout(silT);
+      silT=setTimeout(function(){ fin(lastHeard); }, 2000);
+    }
   };
   r2.onerror=function(e){
     if(!handled){
       handled=true; clearTimeout(tout); clearTimeout(silT);
       if(r2){r2.abort();r2=null;}
-      dictDebug('\u05e9\u05d2\u05d9\u05d0\u05ea \u05de\u05d9\u05e7\u05e8\u05d5\u05e4\u05d5\u05df: '+e.error);
+      dictDebug('\u05e9\u05d2\u05d9\u05d0\u05d4: '+e.error);
       callback('');
     }
   };
-  r2.onend=function(){};
-  // Don't cancel synth here — TTS already done by the time callback fires
-  // Extra delay so any TTS tail doesn't get picked up by mic
+  r2.onend=function(){
+    // If recognition ended without result (e.g. network), finalize with what we have
+    if(!handled){ fin(lastHeard); }
+  };
   var voDelay=/iPhone|iPad/.test(navigator.userAgent)?1200:800;
-  setTimeout(function(){ try{r2.start();}catch(e){ dictDebug('start error: '+e); } }, voDelay);
+  setTimeout(function(){ try{r2.start();}catch(e){ dictDebug('err: '+e); } }, voDelay);
 }
 
 function startIssuePicker(wasPlaying){
@@ -1693,7 +1725,7 @@ function handleCmd(heard, wasPlaying){
     done=true; label='\u05e1\u05d9\u05d5\u05dd'; noEcho=true;
     beep(1046,0.15,0.2);
     pause();
-    sayHebrew('\u05e9\u05dc\u05d5\u05dd');
+    sayHebrew('\u05e9\u05dc\u05d5\u05dd... \u05e9\u05dc\u05d5\u05dd.');
     setTimeout(function(){
       // Try to close (works on Android/Chrome)
       window.close();
@@ -1960,6 +1992,12 @@ h1{font-size:32px;font-weight:900;margin-bottom:3px}
   </div>
 
   <div class="card">
+    <a href="/admin/abbreviations" class="llink">
+      <span>📖</span> מילון ראשי תיבות
+    </a>
+  </div>
+
+  <div class="card">
     <div class="card-title">העלאת ידיעון חדש</div>
     <div id="dz" onclick="document.getElementById('fi').click()"
          ondragover="event.preventDefault();this.classList.add('over')"
@@ -2142,6 +2180,204 @@ async function deleteSeg(segId,issueId){
   loadSegments(issueId);
 }
 loadIssues();
+</script>
+</body>
+</html>"""
+
+@app.route("/admin/abbreviations")
+def admin_abbreviations():
+    return render_template_string(ABBR_ADMIN_HTML)
+
+ABBR_ADMIN_HTML = """<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>מילון ראשי תיבות</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;700;900&display=swap');
+:root{
+  --bg:#f5f2ec;--surface:#fff;--border:#ddd8ce;
+  --green:#2d5f3f;--green-light:#edf5f0;--green-border:#c5deca;
+  --red:#c0392b;--red-light:#fef0f0;--text:#1a1a18;--muted:#888;--r:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Heebo',sans-serif;min-height:100vh}
+.wrap{max-width:820px;margin:0 auto;padding:36px 20px}
+h1{font-size:28px;font-weight:900;margin-bottom:4px}
+.sub{color:var(--muted);font-size:14px;margin-bottom:28px}
+.back{display:inline-flex;align-items:center;gap:6px;color:var(--green);font-weight:700;
+  text-decoration:none;font-size:14px;margin-bottom:24px}
+.back:hover{opacity:.8}
+.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:18px;flex-wrap:wrap}
+.toolbar input[type=search]{flex:1;min-width:180px;border:1px solid var(--border);
+  border-radius:10px;padding:9px 14px;font-family:'Heebo',sans-serif;font-size:14px;
+  background:#fff;color:var(--text)}
+.toolbar input:focus{outline:none;border-color:var(--green)}
+.add-btn{padding:9px 20px;background:var(--green);color:#fff;border:none;
+  border-radius:10px;font-family:'Heebo',sans-serif;font-weight:700;font-size:14px;
+  cursor:pointer;white-space:nowrap}
+.add-btn:hover{opacity:.9}
+.stats{font-size:13px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;background:var(--surface);
+  border-radius:var(--r);overflow:hidden;border:1px solid var(--border)}
+thead th{padding:11px 14px;font-size:12px;font-weight:700;color:var(--muted);
+  text-align:right;background:#faf8f4;border-bottom:1px solid var(--border)}
+tbody tr{border-bottom:1px solid #f0ede8;transition:background .1s}
+tbody tr:last-child{border-bottom:none}
+tbody tr:hover{background:#faf8f4}
+tbody tr.new-row{background:#fffff0}
+td{padding:9px 14px;font-size:14px;vertical-align:middle}
+td.td-abbr{font-weight:700;white-space:nowrap;width:120px}
+td.td-exp{min-width:200px}
+td.td-count{width:70px;text-align:center;color:var(--muted);font-size:13px}
+td.td-act{width:110px;white-space:nowrap}
+.cell-input{width:100%;border:1px solid transparent;border-radius:6px;
+  padding:4px 8px;font-family:'Heebo',sans-serif;font-size:14px;color:var(--text);
+  background:transparent;cursor:text}
+.cell-input:focus{border-color:var(--green);background:#fff;outline:none}
+.cell-input.abbr-input{font-weight:700}
+.save-row-btn{padding:5px 12px;background:var(--green);color:#fff;border:none;
+  border-radius:7px;font-family:'Heebo',sans-serif;font-weight:700;font-size:12px;
+  cursor:pointer;margin-left:6px}
+.save-row-btn:hover{opacity:.9}
+.del-row-btn{padding:5px 10px;background:transparent;border:1px solid #e0c0c0;
+  border-radius:7px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer}
+.del-row-btn:hover{background:var(--red-light)}
+.flash{font-size:11px;color:var(--green);margin-right:6px;display:none}
+.empty{padding:40px;text-align:center;color:var(--muted);font-size:15px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin" class="back">← חזרה לניהול</a>
+  <h1>מילון ראשי תיבות</h1>
+  <p class="sub">עריכה, הוספה ומחיקה של ראשי תיבות</p>
+
+  <div class="toolbar">
+    <input type="search" id="search" placeholder="חיפוש..." oninput="filterRows()">
+    <button class="add-btn" onclick="addRow()">+ הוסף ביטוי</button>
+    <span class="stats" id="stats"></span>
+  </div>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>ראשי תיבות</th>
+        <th>טקסט חלופי</th>
+        <th>מופעים</th>
+        <th>פעולות</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<script>
+var rows=[];
+
+async function load(){
+  var r=await fetch('/api/abbreviations');
+  rows=await r.json();
+  renderTable(rows);
+}
+
+function renderTable(data){
+  var q=(document.getElementById('search').value||'').trim();
+  var filtered=q?data.filter(function(r){
+    return r.abbr.includes(q)||(r.expansion||'').includes(q);
+  }):data;
+
+  document.getElementById('stats').textContent=
+    filtered.length+' מתוך '+data.length+' ביטויים'+
+    (data.filter(function(r){return !r.expansion;}).length?' | '+data.filter(function(r){return !r.expansion;}).length+' ממתינים לפיענוח':'');
+
+  var tb=document.getElementById('tbody');
+  tb.innerHTML='';
+  if(!filtered.length){
+    tb.innerHTML='<tr><td colspan="4" class="empty">אין תוצאות</td></tr>';
+    return;
+  }
+  filtered.forEach(function(row){
+    tb.appendChild(makeRow(row.abbr, row.expansion||'', row.count, false));
+  });
+}
+
+function makeRow(abbr, expansion, count, isNew){
+  var tr=document.createElement('tr');
+  if(isNew) tr.classList.add('new-row');
+  tr.dataset.origAbbr=abbr;
+
+  tr.innerHTML=
+    '<td class="td-abbr"><input class="cell-input abbr-input" value="'+esc(abbr)+'" '+(isNew?'':'readonly')+' placeholder="ביטוי"></td>'+
+    '<td class="td-exp"><input class="cell-input" value="'+esc(expansion)+'" placeholder="טקסט חלופי"></td>'+
+    '<td class="td-count"><input class="cell-input" style="text-align:center" value="'+count+'" placeholder="0" type="number" min="0"></td>'+
+    '<td class="td-act">'+
+      '<span class="flash">✓ נשמר</span>'+
+      '<button class="save-row-btn" onclick="saveRow(this)">שמור</button>'+
+      '<button class="del-row-btn" onclick="delRow(this)">מחק</button>'+
+    '</td>';
+  return tr;
+}
+
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function filterRows(){ renderTable(rows); }
+
+function addRow(){
+  var tb=document.getElementById('tbody');
+  var tr=makeRow('','',0,true);
+  tb.insertBefore(tr, tb.firstChild);
+  tr.querySelector('.abbr-input').focus();
+}
+
+async function saveRow(btn){
+  var tr=btn.closest('tr');
+  var inputs=tr.querySelectorAll('input');
+  var abbr=inputs[0].value.trim();
+  var expansion=inputs[1].value.trim();
+  var count=parseInt(inputs[2].value)||0;
+  if(!abbr){ alert('נא להזין ביטוי'); return; }
+
+  var origAbbr=tr.dataset.origAbbr;
+
+  // If abbr changed (new row or rename): delete old, insert new
+  if(origAbbr && origAbbr!==abbr){
+    await fetch('/api/abbreviations/delete',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({abbr:origAbbr})});
+  }
+
+  await fetch('/api/abbreviations/save',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({abbr:abbr, expansion:expansion, count:count})});
+
+  tr.dataset.origAbbr=abbr;
+  tr.classList.remove('new-row');
+  inputs[0].readOnly=true;
+  var flash=tr.querySelector('.flash');
+  flash.style.display='inline'; setTimeout(function(){flash.style.display='none';},2000);
+
+  // Refresh local data
+  var r=await fetch('/api/abbreviations'); rows=await r.json();
+  document.getElementById('stats').textContent=
+    rows.length+' ביטויים | '+rows.filter(function(r){return !r.expansion;}).length+' ממתינים לפיענוח';
+}
+
+async function delRow(btn){
+  var tr=btn.closest('tr');
+  var abbr=tr.dataset.origAbbr;
+  if(abbr && !confirm('למחוק את "'+abbr+'"?')) return;
+  if(abbr){
+    await fetch('/api/abbreviations/delete',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({abbr:abbr})});
+    var r=await fetch('/api/abbreviations'); rows=await r.json();
+  }
+  tr.remove();
+}
+
+load();
 </script>
 </body>
 </html>"""
