@@ -62,6 +62,28 @@ def init_db():
             "INSERT INTO abbreviations (abbr, expansion, count) VALUES (%s, '', 0) ON CONFLICT (abbr) DO NOTHING",
             (a,)
         )
+    # Seed letter names with __ prefix (editable by admin, not shown as unresolved)
+    letter_names = [
+        ('__\u05d0', '\u05d0\u05dc\u05e3'), ('__\u05d1', '\u05d1\u05d9\u05ea'),
+        ('__\u05d2', '\u05d2\u05d9\u05de\u05dc'), ('__\u05d3', '\u05d3\u05dc\u05ea'),
+        ('__\u05d4', '\u05d4\u05d0'), ('__\u05d5', '\u05d5\u05d5'),
+        ('__\u05d6', 'zayin'), ('__\u05d7', '\u05d7\u05ea'),
+        ('__\u05d8', '\u05d8\u05d9\u05ea'), ('__\u05d9', '\u05d9\u05d5\u05d3'),
+        ('__\u05db', '\u05db\u05e3'), ('__\u05da', '\u05db\u05e3'),
+        ('__\u05dc', '\u05dc\u05de\u05d3'), ('__\u05de', '\u05de\u05dd'),
+        ('__\u05dd', '\u05de\u05dd'), ('__\u05e0', '\u05e0\u05d5\u05df'),
+        ('__\u05df', '\u05e0\u05d5\u05df'), ('__\u05e1', '\u05e1\u05de\u05da'),
+        ('__\u05e2', '\u05e2\u05d9\u05df'), ('__\u05e4', '\u05e4\u05d0'),
+        ('__\u05e3', '\u05e4\u05d0'), ('__\u05e6', '\u05e6\u05d3\u05d9'),
+        ('__\u05e5', '\u05e6\u05d3\u05d9'), ('__\u05e7', '\u05e7\u05d5\u05e3'),
+        ('__\u05e8', '\u05e8\u05d9\u05e9'), ('__\u05e9', '\u05e9\u05d9\u05df'),
+        ('__\u05ea', '\u05ea\u05d5'),
+    ]
+    for abbr, exp in letter_names:
+        cur.execute(
+            "INSERT INTO abbreviations (abbr, expansion, count) VALUES (%s, %s, 0) ON CONFLICT (abbr) DO NOTHING",
+            (abbr, exp)
+        )
     conn.commit()
     cur.close()
     conn.close()
@@ -1047,10 +1069,16 @@ async function loadAbbreviations(){
     var rows=await r.json();
     ABBR_DICT={};
     rows.forEach(function(row){
-      if(row.expansion) ABBR_DICT[row.abbr]=row.expansion;
-      // Also map ״ variant
-      var v=row.abbr.replace(/"/g,'\u05f4');
-      if(v!==row.abbr && row.expansion) ABBR_DICT[v]=row.expansion;
+      if(!row.expansion) return;
+      if(row.abbr.startsWith('__')){
+        // Letter name entry: key is the single letter after __
+        var ch=row.abbr.slice(2);
+        LETTER_NAMES[ch]=row.expansion;
+      } else {
+        ABBR_DICT[row.abbr]=row.expansion;
+        var v=row.abbr.replace(/"/g,'\u05f4');
+        if(v!==row.abbr) ABBR_DICT[v]=row.expansion;
+      }
     });
   } catch(e){ console.warn('abbr load failed',e); }
 }
@@ -1378,7 +1406,6 @@ function startListen(){
     resetVcBtn();
   };
   rec.onend=function(){clearTimeout(timeoutId);clearTimeout(silenceTimer);resetVcBtn();};
-  rec.start();
 }
 
 function resetVcBtn(){
@@ -2284,38 +2311,68 @@ async function load(){
 
 function renderTable(data){
   var q=(document.getElementById('search').value||'').trim();
-  var filtered=q?data.filter(function(r){
-    return r.abbr.includes(q)||(r.expansion||'').includes(q);
-  }):data;
+  var letters=data.filter(function(r){return r.abbr.startsWith('__');});
+  var abbrevs=data.filter(function(r){return !r.abbr.startsWith('__');});
 
+  var filtered=(q?abbrevs.filter(function(r){
+    return r.abbr.includes(q)||(r.expansion||'').includes(q);
+  }):abbrevs);
+  var filteredL=(q?letters.filter(function(r){
+    return r.abbr.slice(2).includes(q)||(r.expansion||'').includes(q);
+  }):letters);
+
+  var unresolved=abbrevs.filter(function(r){return !r.expansion;}).length;
   document.getElementById('stats').textContent=
-    filtered.length+' מתוך '+data.length+' ביטויים'+
-    (data.filter(function(r){return !r.expansion;}).length?' | '+data.filter(function(r){return !r.expansion;}).length+' ממתינים לפיענוח':'');
+    filtered.length+' ראשי תיבות'+
+    (unresolved?' | '+unresolved+' ממתינים לפיענוח':'')+
+    ' | '+filteredL.length+' שמות אותיות';
 
   var tb=document.getElementById('tbody');
   tb.innerHTML='';
-  if(!filtered.length){
+
+  if(!filtered.length && !filteredL.length){
     tb.innerHTML='<tr><td colspan="4" class="empty">אין תוצאות</td></tr>';
     return;
   }
-  filtered.forEach(function(row){
-    tb.appendChild(makeRow(row.abbr, row.expansion||'', row.count, false));
-  });
+
+  // Abbreviations section
+  if(filtered.length){
+    var hdr=document.createElement('tr');
+    hdr.innerHTML='<td colspan="4" style="background:#f0ede8;font-size:12px;font-weight:700;color:var(--muted);padding:7px 14px">ראשי תיבות</td>';
+    tb.appendChild(hdr);
+    filtered.forEach(function(row){
+      tb.appendChild(makeRow(row.abbr, row.expansion||'', row.count, false, false));
+    });
+  }
+
+  // Letter names section
+  if(filteredL.length){
+    var hdr2=document.createElement('tr');
+    hdr2.innerHTML='<td colspan="4" style="background:#f0ede8;font-size:12px;font-weight:700;color:var(--muted);padding:7px 14px">שמות אותיות</td>';
+    tb.appendChild(hdr2);
+    filteredL.forEach(function(row){
+      tb.appendChild(makeRow(row.abbr, row.expansion||'', row.count, false, true));
+    });
+  }
 }
 
-function makeRow(abbr, expansion, count, isNew){
+function makeRow(abbr, expansion, count, isNew, isLetter){
   var tr=document.createElement('tr');
   if(isNew) tr.classList.add('new-row');
   tr.dataset.origAbbr=abbr;
 
-  tr.innerHTML=
-    '<td class="td-abbr"><input class="cell-input abbr-input" value="'+esc(abbr)+'" '+(isNew?'':'readonly')+' placeholder="ביטוי"></td>'+
-    '<td class="td-exp"><input class="cell-input" value="'+esc(expansion)+'" placeholder="טקסט חלופי"></td>'+
-    '<td class="td-count"><input class="cell-input" style="text-align:center" value="'+count+'" placeholder="0" type="number" min="0"></td>'+
+  var displayAbbr=isLetter ? abbr.slice(2) : abbr;
+  var abbrCell=isLetter
+    ? '<td class="td-abbr" style="text-align:center;font-size:20px">'+esc(displayAbbr)+'<input type="hidden" value="'+esc(abbr)+'"></td>'
+    : '<td class="td-abbr"><input class="cell-input abbr-input" value="'+esc(abbr)+'" '+(isNew?'':'readonly')+' placeholder="ביטוי"></td>';
+
+  tr.innerHTML=abbrCell+
+    '<td class="td-exp"><input class="cell-input" value="'+esc(expansion)+'" placeholder="'+(isLetter?'שם ההגייה':'טקסט חלופי')+'"></td>'+
+    '<td class="td-count">'+(isLetter?'—':'<input class="cell-input" style="text-align:center" value="'+count+'" placeholder="0" type="number" min="0">')+'</td>'+
     '<td class="td-act">'+
       '<span class="flash">✓ נשמר</span>'+
       '<button class="save-row-btn" onclick="saveRow(this)">שמור</button>'+
-      '<button class="del-row-btn" onclick="delRow(this)">מחק</button>'+
+      (isLetter?'':'<button class="del-row-btn" onclick="delRow(this)">מחק</button>')+
     '</td>';
   return tr;
 }
@@ -2333,19 +2390,25 @@ function addRow(){
 
 async function saveRow(btn){
   var tr=btn.closest('tr');
-  var inputs=tr.querySelectorAll('input');
-  var abbr=inputs[0].value.trim();
-  var expansion=inputs[1].value.trim();
-  var count=parseInt(inputs[2].value)||0;
-  if(!abbr){ alert('נא להזין ביטוי'); return; }
-
   var origAbbr=tr.dataset.origAbbr;
+  var isLetter=origAbbr.startsWith('__');
 
-  // If abbr changed (new row or rename): delete old, insert new
-  if(origAbbr && origAbbr!==abbr){
-    await fetch('/api/abbreviations/delete',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({abbr:origAbbr})});
+  var expansion, abbr, count;
+  if(isLetter){
+    abbr=origAbbr;
+    expansion=tr.querySelectorAll('input')[1].value.trim();
+    count=0;
+  } else {
+    var inputs=tr.querySelectorAll('input[type!=hidden]');
+    abbr=inputs[0].value.trim();
+    expansion=inputs[1].value.trim();
+    count=parseInt(inputs[2]&&inputs[2].value)||0;
+    if(!abbr){ alert('נא להזין ביטוי'); return; }
+    if(origAbbr && origAbbr!==abbr){
+      await fetch('/api/abbreviations/delete',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({abbr:origAbbr})});
+    }
   }
 
   await fetch('/api/abbreviations/save',{method:'POST',
@@ -2354,14 +2417,13 @@ async function saveRow(btn){
 
   tr.dataset.origAbbr=abbr;
   tr.classList.remove('new-row');
-  inputs[0].readOnly=true;
+  if(!isLetter){ var ai=tr.querySelector('.abbr-input'); if(ai) ai.readOnly=true; }
   var flash=tr.querySelector('.flash');
   flash.style.display='inline'; setTimeout(function(){flash.style.display='none';},2000);
-
-  // Refresh local data
   var r=await fetch('/api/abbreviations'); rows=await r.json();
   document.getElementById('stats').textContent=
-    rows.length+' ביטויים | '+rows.filter(function(r){return !r.expansion;}).length+' ממתינים לפיענוח';
+    rows.filter(function(r){return !r.abbr.startsWith('__');}).length+' ראשי תיבות | '+
+    rows.filter(function(r){return !r.abbr.startsWith('__')&&!r.expansion;}).length+' ממתינים';
 }
 
 async function delRow(btn){
