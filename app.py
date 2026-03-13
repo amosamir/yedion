@@ -1138,7 +1138,7 @@ function normalizeForSpeech(text){
   // 0. Normalize time expressions: 26:17 → "שש עשרה עשרים ושש" (hours:minutes)
   //    Pattern: digits:digits where right side is 0-59 (minutes)
   text=text.replace(/(?<!\d)(\d{1,2}):(\d{1,2})(?!\d)/g,function(m,a,b){
-    var hNum=parseInt(a,10), mNum=parseInt(b,10);
+    var hNum=parseInt(b,10), mNum=parseInt(a,10);
     if(hNum>=24||mNum>=60) return m;
     var heHours=['אפס','אחת','שתיים','שלוש','ארבע','חמש','שש','שבע','שמונה','תשע','עשר',
       'אחת עשרה','שתים עשרה','שלוש עשרה','ארבע עשרה','חמש עשרה','שש עשרה',
