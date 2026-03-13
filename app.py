@@ -886,7 +886,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 </div>
 
 <script>
-var S=null,synth=window.speechSynthesis,utt=null,playing=false,rate=1,heVoice=null,greetingActive=false;
+var S=null,synth=window.speechSynthesis,utt=null,playing=false,rate=1,heVoice=null,greetingActive=false,wakeLock=null;
 var currentScreen='blind';
 
 // ── Voices ──────────────────────────────────────────────────────
@@ -1137,7 +1137,7 @@ function expandLetterNames(word){
 function normalizeForSpeech(text){
   // 0. Normalize time expressions: 26:17 → "שש עשרה עשרים ושש" (hours:minutes)
   //    Pattern: digits:digits where right side is 0-59 (minutes)
-  text=text.replace(/\b(\d{1,2}):(\d{1,2})\b/g,function(m,a,b){
+  text=text.replace(/(?<!\d)(\d{1,2}):(\d{1,2})(?!\d)/g,function(m,a,b){
     var hNum=parseInt(a,10), mNum=parseInt(b,10);
     if(hNum>=24||mNum>=60) return m;
     var heHours=['אפס','אחת','שתיים','שלוש','ארבע','חמש','שש','שבע','שמונה','תשע','עשר',
@@ -1195,6 +1195,18 @@ function normalizeForSpeech(text){
   return text.replace(/ {2,}/g,' ');
 }
 
+function acquireWakeLock(){
+  if('wakeLock' in navigator && !wakeLock){
+    navigator.wakeLock.request('screen').then(function(wl){
+      wakeLock=wl;
+      wakeLock.addEventListener('release',function(){ wakeLock=null; });
+    }).catch(function(){});
+  }
+}
+function releaseWakeLock(){
+  if(wakeLock){ wakeLock.release(); wakeLock=null; }
+}
+
 function speak(){
   if(!S)return;
   var seg=S.segments[S.current_position];
@@ -1202,6 +1214,7 @@ function speak(){
   chunkIdx=0;
   synth.cancel();
   chunkStopped=false;
+  acquireWakeLock();
   onSpeakStart();
   _nextChunk();
 }
@@ -1210,6 +1223,7 @@ function resume(){
   if(chunks.length && chunkIdx<chunks.length){
     synth.cancel();
     chunkStopped=false;
+    acquireWakeLock();
     onSpeakStart();
     _nextChunk();
   } else {
@@ -1241,15 +1255,17 @@ function pause(){
   if(playing){
     chunkStopped=true;
     synth.cancel();
+    releaseWakeLock();
     setIdle();
-    // chunkIdx stays — resume() will restart from this chunk
   }
 }
 
 function stop(){
   chunkStopped=true;
   chunks=[]; chunkIdx=0;
-  synth.cancel(); setIdle();
+  synth.cancel();
+  releaseWakeLock();
+  setIdle();
   showPhrase('');
 }
 
@@ -1269,7 +1285,8 @@ function onSpeakEnd(){
   setIdle();
   showPhrase('');
   if(S&&S.current_position<S.total-1){
-    S.current_position++;savePos(S.current_position);render();speak();
+    S.current_position++;savePos(S.current_position);render();
+    setTimeout(function(){ speak(); }, 2000);
   }
 }
 function setIdle(){
