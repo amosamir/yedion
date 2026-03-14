@@ -679,15 +679,6 @@ def issues():
     cur.close(); conn.close()
     return jsonify([dict(r) for r in rows])
 
-@app.route("/api/set_issue", methods=["POST"])
-def set_issue():
-    data = request.json
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE listener_state SET issue_id=%s, segment_position=0 WHERE id=1",
-                (data["issue_id"],))
-    conn.commit(); cur.close(); conn.close()
-    return jsonify({"ok": True})
-
 @app.route("/api/update_issue", methods=["POST"])
 def update_issue():
     data = request.json
