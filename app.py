@@ -2,15 +2,17 @@
 ידיעון בארות יצחק — נגן קול
 Flask + PostgreSQL (Railway) | Web Speech API (iOS)
 """
-import os, re, json
-from datetime import datetime
+import os, re, json, secrets
+from datetime import datetime, timedelta
 from itertools import groupby
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, session, make_response
 import pdfplumber
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
@@ -45,6 +47,17 @@ def init_db():
             abbr TEXT PRIMARY KEY,
             expansion TEXT NOT NULL DEFAULT '',
             count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS users (
+            id            SERIAL PRIMARY KEY,
+            name          TEXT UNIQUE NOT NULL,
+            active        BOOLEAN NOT NULL DEFAULT TRUE,
+            issue_id      INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+            segment_pos   INTEGER NOT NULL DEFAULT 0,
+            chunk_pos     INTEGER NOT NULL DEFAULT 0,
+            play_speed    REAL NOT NULL DEFAULT 1.0,
+            show_greeting BOOLEAN NOT NULL DEFAULT TRUE,
+            last_seen     TIMESTAMP
         );
         INSERT INTO listener_state (id, issue_id, segment_position)
         VALUES (1, NULL, 0)
@@ -437,6 +450,57 @@ def listener():
 def admin():
     return render_template_string(ADMIN_HTML)
 
+@app.route("/admin/users")
+def admin_users():
+    return render_template_string(USERS_ADMIN_HTML)
+
+@app.route("/api/users")
+def get_users():
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""SELECT u.*, i.title as issue_title
+                   FROM users u LEFT JOIN issues i ON i.id=u.issue_id
+                   ORDER BY u.last_seen DESC NULLS LAST""")
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/users/save", methods=["POST"])
+def save_user():
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    if data.get("id"):
+        cur.execute("""UPDATE users SET name=%s, active=%s, play_speed=%s,
+                       show_greeting=%s WHERE id=%s""",
+                    (data["name"], data["active"], data["play_speed"],
+                     data["show_greeting"], data["id"]))
+    else:
+        issue_id = get_latest_issue_id()
+        cur.execute("""INSERT INTO users (name, active, issue_id, segment_pos,
+                       chunk_pos, play_speed, show_greeting)
+                       VALUES (%s, %s, %s, 0, 0, %s, %s) RETURNING id""",
+                    (data["name"], data.get("active", True), issue_id,
+                     data.get("play_speed", 1.0), data.get("show_greeting", True)))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/users/set_speed", methods=["POST"])
+def set_speed():
+    user = get_current_user()
+    if not user: return jsonify({"ok": False})
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE users SET play_speed=%s WHERE id=%s",
+                (data["speed"], user["id"]))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM users WHERE id=%s", (data["id"],))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
 @app.route("/api/upload", methods=["POST"])
 def upload():
     if "pdf" not in request.files:
@@ -477,37 +541,129 @@ def upload():
         import traceback; traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+# ─── User helpers ────────────────────────────────────────────────────────────
+
+def get_current_user():
+    """Return user row from session cookie, or None."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE id=%s", (user_id,))
+    user = cur.fetchone()
+    cur.close(); conn.close()
+    return user
+
+def get_latest_issue_id():
+    """Return id of most recently uploaded issue, or None."""
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id FROM issues ORDER BY id DESC LIMIT 1")
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["id"] if row else None
+
+# ─── Auth routes ─────────────────────────────────────────────────────────────
+
+@app.route("/api/whoami")
+def whoami():
+    user = get_current_user()
+    if not user:
+        return jsonify({"logged_in": False})
+    return jsonify({"logged_in": True, "name": user["name"], "id": user["id"],
+                    "play_speed": user["play_speed"],
+                    "show_greeting": user["show_greeting"]})
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    name = (request.json.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "no_name"})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE name=%s", (name,))
+    user = cur.fetchone()
+    if user:
+        if not user["active"]:
+            cur.close(); conn.close()
+            return jsonify({"ok": False, "error": "inactive"})
+        # Update last_seen
+        cur.execute("UPDATE users SET last_seen=%s WHERE id=%s",
+                    (datetime.now(), user["id"]))
+        conn.commit()
+        cur.close(); conn.close()
+        session.permanent = True
+        session["user_id"] = user["id"]
+        return jsonify({"ok": True, "name": user["name"], "new_user": False,
+                        "play_speed": user["play_speed"],
+                        "show_greeting": user["show_greeting"]})
+    else:
+        # New user — create automatically
+        issue_id = get_latest_issue_id()
+        cur.execute("""
+            INSERT INTO users (name, active, issue_id, segment_pos, chunk_pos,
+                               play_speed, show_greeting, last_seen)
+            VALUES (%s, TRUE, %s, 0, 0, 1.0, TRUE, %s)
+            RETURNING id
+        """, (name, issue_id, datetime.now()))
+        new_id = cur.fetchone()["id"]
+        conn.commit(); cur.close(); conn.close()
+        session.permanent = True
+        session["user_id"] = new_id
+        return jsonify({"ok": True, "name": name, "new_user": True,
+                        "play_speed": 1.0, "show_greeting": True})
+
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+# ─── Current issue/position (per user) ───────────────────────────────────────
+
 @app.route("/api/current")
 def current():
+    user = get_current_user()
+    if not user:
+        return jsonify({"need_login": True})
+    if not user["issue_id"]:
+        return jsonify({"no_issue": True})
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM listener_state WHERE id=1")
-    state = cur.fetchone()    
-    if not state or not state["issue_id"]:
+    cur.execute("SELECT * FROM issues WHERE id=%s", (user["issue_id"],))
+    issue = cur.fetchone()
+    if not issue:
         cur.close(); conn.close()
         return jsonify({"no_issue": True})
-
-    cur.execute("SELECT * FROM issues WHERE id=%s", (state["issue_id"],))
-    issue = cur.fetchone()
     cur.execute("SELECT * FROM segments WHERE issue_id=%s ORDER BY position",
-                (state["issue_id"],))
+                (user["issue_id"],))
     segs = cur.fetchall()
     cur.close(); conn.close()
-
     return jsonify({
         "issue_title": issue["title"],
         "issue_id": issue["id"],
         "segments": [{"position": s["position"], "title": s["title"],
                        "body": s["body"]} for s in segs],
-        "current_position": state["segment_position"],
+        "current_position": user["segment_pos"],
+        "chunk_pos": user["chunk_pos"],
         "total": len(segs)
     })
 
 @app.route("/api/set_position", methods=["POST"])
 def set_position():
+    user = get_current_user()
+    if not user: return jsonify({"ok": False})
     data = request.json
     conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE listener_state SET segment_position=%s WHERE id=1",
-                (data["position"],))
+    cur.execute("UPDATE users SET segment_pos=%s, chunk_pos=%s WHERE id=%s",
+                (data.get("position", 0), data.get("chunk", 0), user["id"]))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/set_issue", methods=["POST"])
+def set_issue():
+    user = get_current_user()
+    if not user: return jsonify({"ok": False})
+    data = request.json
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE users SET issue_id=%s, segment_pos=0, chunk_pos=0 WHERE id=%s",
+                (data["issue_id"], user["id"]))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
@@ -735,6 +891,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);
   cursor:pointer;flex-shrink:0;text-align:center;
   transition:opacity .2s;-webkit-user-select:none;user-select:none}
 #switch-issue-btn:active{opacity:.7}
+#user-bar{display:flex;align-items:center;gap:6px;padding:6px 0;
+  font-size:13px;color:var(--muted);border-bottom:1px solid var(--border);margin-bottom:8px}
+#user-name-lbl{flex:1;font-weight:700;color:var(--text)}
 
 #hdr{display:flex;flex-direction:column;gap:3px}
 #issue-lbl{font-size:11px;color:var(--accent);font-weight:700;
@@ -850,6 +1009,11 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 <div id="app">
   <button id="back-blind" onclick="showBlind()">🎙 הפעלה קולית</button>
   <button id="switch-issue-btn" onclick="startIssuePicker(false)">⇄ החלף ידיעון</button>
+  <div id="user-bar">
+    <span id="user-name-lbl"></span>
+    <button onclick="switchUser()" style="font-size:12px;padding:3px 10px;background:transparent;border:1px solid var(--border,#ccc);border-radius:6px;cursor:pointer;margin-right:6px">החלף משתמש</button>
+    <button onclick="doLogout()" style="font-size:12px;padding:3px 10px;background:transparent;border:1px solid var(--border,#ccc);border-radius:6px;cursor:pointer">התנתק</button>
+  </div>
   <div id="hdr">
     <div id="issue-lbl">ידיעון</div>
     <div id="seg-lbl">טוען...</div>
@@ -943,23 +1107,85 @@ function showDetail(){
   document.getElementById('listbtn').classList.add('vis');
 }
 
+// ── Login flow ───────────────────────────────────────────────────
+var currentUser=null;
+
+async function startLoginFlow(onDone){
+  // Ask "מי אתה?" and listen for name
+  await new Promise(function(res){
+    unlockTTS();
+    setTimeout(function(){
+      sayHebrew('\u05de\u05d9 \u05d0\u05ea\u05d4?', function(){ res(); });
+    }, 300);
+  });
+  dictListenOnce(async function(heard){
+    var name=(heard||'').replace(/[.,!?]/g,'').trim();
+    if(!name){
+      sayHebrew('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
+      setTimeout(function(){ startLoginFlow(onDone); }, 2000);
+      return;
+    }
+    var r=await fetch('/api/login',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:name})});
+    var d=await r.json();
+    if(!d.ok){
+      if(d.error==='inactive'){
+        sayHebrew('\u05de\u05e9\u05ea\u05de\u05e9 '+ name +' \u05d0\u05d9\u05e0\u05d5 \u05e4\u05e2\u05d9\u05dc.');
+      } else {
+        sayHebrew('\u05e9\u05d2\u05d9\u05d0\u05d4. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
+        setTimeout(function(){ startLoginFlow(onDone); }, 2000);
+      }
+      return;
+    }
+    currentUser={name:d.name, show_greeting:d.show_greeting, play_speed:d.play_speed, new_user:d.new_user};
+    // Apply user settings
+    rate=d.play_speed||1;
+    document.querySelectorAll('.sb').forEach(function(b){
+      b.classList.toggle('on',parseFloat(b.textContent.replace('x',''))===rate);
+    });
+    if(onDone) onDone();
+  });
+}
+
 // ── Load ─────────────────────────────────────────────────────────
 async function load(){
   await loadAbbreviations();
   var r=await fetch('/api/current');
   var d=await r.json();
   document.getElementById('ls').style.display='none';
+
+  if(d.need_login){
+    // Not logged in — start login flow
+    document.getElementById('blind').style.display='flex';
+    document.getElementById('blind-seg').textContent='\u05d1\u05d1\u05e7\u05e9\u05d4 \u05d4\u05d6\u05d3\u05d4\u05d4...';
+    // Wait for first touch to unlock TTS
+    function startAfterTouch(){
+      document.removeEventListener('touchstart',startAfterTouch);
+      document.removeEventListener('mousedown',startAfterTouch);
+      startLoginFlow(function(){
+        load(); // reload after login
+      });
+    }
+    document.addEventListener('touchstart',startAfterTouch,{once:true});
+    document.addEventListener('mousedown',startAfterTouch,{once:true});
+    return;
+  }
+
   if(d.no_issue){
     document.getElementById('blind').style.display='flex';
     document.getElementById('blind-seg').textContent='\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05de\u05d9\u05df';
     return;
   }
   S=d;
+  // Resume from saved chunk position if available
+  chunkIdx=d.chunk_pos||0;
   render();
   renderD();
   showBlind();
-  // Opening announcement on first user touch (iOS/Android require gesture for TTS)
-  if(!sessionStorage.getItem('greeted')){
+  // Opening announcement
+  var shouldGreet=(!currentUser||currentUser.show_greeting) && !sessionStorage.getItem('greeted');
+  if(shouldGreet){
     function greetOnce(){
       document.removeEventListener('touchstart',greetOnce);
       document.removeEventListener('mousedown',greetOnce);
@@ -967,8 +1193,9 @@ async function load(){
       var seg=S.segments[S.current_position];
       unlockTTS();
       greetingActive=true;
+      var who=currentUser?' '+currentUser.name:'';
       var greetText=
-        '\u05e9\u05dc\u05d5\u05dd. ' +
+        '\u05e9\u05dc\u05d5\u05dd'+who+'. ' +
         S.issue_title+'. '+
         '\u05d0\u05e0\u05d7\u05e0\u05d5 \u05d1\u05d7\u05dc\u05e7 '+seg.title+'. '+
         '\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc \u05d4\u05e7\u05e9 \u05e2\u05dc \u05de\u05e8\u05db\u05d6 \u05d4\u05de\u05e1\u05da \u05d5\u05d0\u05de\u05d5\u05e8 \u05d4\u05ea\u05d7\u05dc. '+
@@ -996,8 +1223,30 @@ function render(){
   document.getElementById('pfill').style.width=
     ((S.current_position+1)/S.total*100)+'%';
   document.getElementById('ta').scrollTop=0;
+  // Show current user name
+  var nameLbl=document.getElementById('user-name-lbl');
+  if(nameLbl) nameLbl.textContent=currentUser?currentUser.name:'';
   updateBlindSeg();
   renderD();
+}
+
+async function doLogout(){
+  pause();
+  await fetch('/api/logout',{method:'POST'});
+  currentUser=null;
+  sessionStorage.removeItem('greeted');
+  location.reload();
+}
+
+async function switchUser(){
+  pause();
+  await fetch('/api/logout',{method:'POST'});
+  currentUser=null;
+  sessionStorage.removeItem('greeted');
+  startLoginFlow(function(){
+    sessionStorage.removeItem('greeted');
+    load();
+  });
 }
 function updateBlindSeg(){
   if(!S)return;
@@ -1210,7 +1459,10 @@ function releaseWakeLock(){
 function speak(){
   if(!S)return;
   var seg=S.segments[S.current_position];
-  chunks=splitChunks(normalizeForSpeech(seg.title+'. '+seg.body));
+  // Build chunks: title first, then 1s pause marker, then body
+  var titleChunks=splitChunks(normalizeForSpeech(seg.title));
+  var bodyChunks=splitChunks(normalizeForSpeech(seg.body));
+  chunks=titleChunks.concat(['__PAUSE1__']).concat(bodyChunks);
   chunkIdx=0;
   synth.cancel();
   chunkStopped=false;
@@ -1235,7 +1487,15 @@ function _nextChunk(){
   if(chunkStopped||!playing)return;
   if(chunkIdx>=chunks.length){onSpeakEnd();return;}
   var text=chunks[chunkIdx];
+  // Pause marker — wait 1 second then continue
+  if(text==='__PAUSE1__'){
+    savePos(S.current_position, chunkIdx);
+    chunkIdx++;
+    setTimeout(function(){ if(!chunkStopped&&playing) _nextChunk(); }, 1000);
+    return;
+  }
   showPhrase(text);
+  savePos(S.current_position, chunkIdx);
   utt=new SpeechSynthesisUtterance(text);
   utt.lang='he-IL'; utt.rate=rate;
   if(heVoice)utt.voice=heVoice;
@@ -1302,6 +1562,10 @@ function spd(s){
   document.querySelectorAll('.sb').forEach(function(b){
     b.classList.toggle('on',parseFloat(b.textContent.replace('x',''))===s);
   });
+  // Save to user profile
+  fetch('/api/users/set_speed',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({speed:s})}).catch(function(){});
   // restart from beginning of segment
   if(playing){stop();speak();}
 }
@@ -1336,10 +1600,10 @@ function showResumePrompt(){
 }
 
 // ── Save position ────────────────────────────────────────────────
-async function savePos(p){
+async function savePos(p, chk){
   await fetch('/api/set_position',{method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({position:p})});
+    body:JSON.stringify({position:p, chunk:chk||0})});
 }
 
 // ── Drawer ───────────────────────────────────────────────────────
@@ -1833,14 +2097,36 @@ function handleCmd(heard, wasPlaying){
     pause();
     sayHebrew('\u05e9\u05dc\u05d5\u05dd... \u05e9\u05dc\u05d5\u05dd.');
     setTimeout(function(){
-      // Try to close (works on Android/Chrome)
       window.close();
-      // On iOS window.close() is a no-op — show end screen instead
       setTimeout(function(){
         document.getElementById('blind').style.display='none';
         document.getElementById('end-screen').style.display='flex';
       },400);
     },600);
+  }
+  // ── התנתק
+  else if(/\u05d4\u05ea\u05e0\u05ea\u05e7/.test(h)){
+    done=true; label='\u05d4\u05ea\u05e0\u05ea\u05e7'; noEcho=true;
+    pause();
+    fetch('/api/logout',{method:'POST'}).then(function(){
+      currentUser=null;
+      sessionStorage.removeItem('greeted');
+      sayHebrew('\u05d4\u05ea\u05e0\u05ea\u05e7\u05ea \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4.');
+      setTimeout(function(){ location.reload(); }, 2000);
+    });
+  }
+  // ── החלף משתמש
+  else if(/\u05d4\u05d7\u05dc\u05e3/.test(h)&&/\u05de\u05e9\u05ea\u05de\u05e9/.test(h)){
+    done=true; label='\u05d4\u05d7\u05dc\u05e3 \u05de\u05e9\u05ea\u05de\u05e9'; noEcho=true;
+    pause();
+    fetch('/api/logout',{method:'POST'}).then(function(){
+      currentUser=null;
+      sessionStorage.removeItem('greeted');
+      startLoginFlow(function(){
+        sessionStorage.removeItem('greeted');
+        load();
+      });
+    });
   }
   // ── החלף קובץ / גיליון / ידיעון
   else if(/\u05d4\u05d7\u05dc\u05e3|\u05e9\u05e0\u05d4/.test(h)&&/\u05e7\u05d5\u05d1\u05e5|\u05d2\u05d9\u05dc\u05d9\u05d5\u05df|\u05d9\u05d3\u05d9\u05e2\u05d5\u05df/.test(h)){
@@ -2100,6 +2386,12 @@ h1{font-size:32px;font-weight:900;margin-bottom:3px}
   <div class="card">
     <a href="/admin/abbreviations" class="llink">
       <span>📖</span> מילון ראשי תיבות
+    </a>
+  </div>
+
+  <div class="card">
+    <a href="/admin/users" class="llink">
+      <span>👥</span> ניהול משתמשים
     </a>
   </div>
 
@@ -2528,6 +2820,218 @@ async function delRow(btn){
   document.getElementById('stats').textContent=
     rows.filter(function(r){return !r.abbr.startsWith('__');}).length+' ראשי תיבות | '+
     rows.filter(function(r){return !r.abbr.startsWith('__')&&!r.expansion;}).length+' ממתינים';
+}
+
+function showToast(msg){
+  var t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(function(){t.classList.remove('show');},2200);
+}
+
+load();
+</script>
+</body>
+</html>"""
+
+USERS_ADMIN_HTML = """<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ניהול משתמשים</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;700;900&display=swap');
+:root{
+  --bg:#f5f2ec;--surface:#fff;--border:#ddd8ce;
+  --green:#2d5f3f;--green-light:#edf5f0;--green-border:#c5deca;
+  --red:#c0392b;--red-light:#fef0f0;--text:#1a1a18;--muted:#888;--r:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Heebo',sans-serif;min-height:100vh}
+.wrap{max-width:900px;margin:0 auto;padding:36px 20px}
+h1{font-size:28px;font-weight:900;margin-bottom:4px}
+.sub{color:var(--muted);font-size:14px;margin-bottom:28px}
+.back{display:inline-flex;align-items:center;gap:6px;color:var(--green);font-weight:700;
+  text-decoration:none;font-size:14px;margin-bottom:24px}
+.back:hover{opacity:.8}
+.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:18px;flex-wrap:wrap}
+.add-btn{padding:9px 20px;background:var(--green);color:#fff;border:none;
+  border-radius:10px;font-family:'Heebo',sans-serif;font-weight:700;font-size:14px;cursor:pointer}
+.add-btn:hover{opacity:.9}
+.stats{font-size:13px;color:var(--muted);flex:1}
+table{width:100%;border-collapse:collapse;background:var(--surface);
+  border-radius:var(--r);overflow:hidden;border:1px solid var(--border)}
+thead th{padding:10px 12px;font-size:12px;font-weight:700;color:var(--muted);
+  text-align:right;background:#faf8f4;border-bottom:1px solid var(--border)}
+tbody tr{border-bottom:1px solid #f0ede8;transition:background .1s}
+tbody tr:last-child{border-bottom:none}
+tbody tr:hover{background:#faf8f4}
+tbody tr.dirty{background:#fffbea}
+tbody tr.new-row{background:#f0fff4}
+td{padding:7px 10px;font-size:13px;vertical-align:middle}
+.cell-input{width:100%;border:1px solid transparent;border-radius:6px;
+  padding:4px 8px;font-family:'Heebo',sans-serif;font-size:13px;color:var(--text);
+  background:transparent;cursor:text}
+.cell-input:focus{border-color:var(--green);background:#fff;outline:none}
+.cell-input:not(:focus):hover{background:#f5f5f0}
+select.cell-input{cursor:pointer}
+.del-btn{padding:4px 10px;background:transparent;border:1px solid #e0c0c0;
+  border-radius:7px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer}
+.del-btn:hover{background:var(--red-light)}
+.badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700}
+.badge-on{background:var(--green-light);color:var(--green)}
+.badge-off{background:#f0f0f0;color:var(--muted)}
+.save-all-btn{padding:9px 20px;background:#1a6b3f;color:#fff;border:none;
+  border-radius:10px;font-family:'Heebo',sans-serif;font-weight:700;font-size:14px;
+  cursor:pointer;display:none}
+.save-all-btn.vis{display:inline-block}
+.save-all-btn:hover{opacity:.9}
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+  background:var(--green);color:#fff;padding:12px 28px;border-radius:99px;
+  font-weight:700;font-size:15px;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
+.muted{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin" class="back">← חזרה לניהול</a>
+  <h1>ניהול משתמשים</h1>
+  <p class="sub">הוספה, עריכה ומחיקה של משתמשים</p>
+
+  <div class="toolbar">
+    <button class="add-btn" onclick="addRow()">+ הוסף משתמש</button>
+    <button class="save-all-btn" id="saveAllBtn" onclick="saveAll()">💾 שמור הכל</button>
+    <span class="stats" id="stats"></span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>שם</th>
+        <th>פעיל</th>
+        <th>מהירות</th>
+        <th>הודעת פתיחה</th>
+        <th>ידיעון נוכחי</th>
+        <th>כניסה אחרונה</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+<div id="toast"></div>
+
+<script>
+var rows=[], issues=[];
+
+async function load(){
+  var r1=await fetch('/api/users');
+  rows=await r1.json();
+  var r2=await fetch('/api/issues');
+  issues=await r2.json();
+  render();
+}
+
+function render(){
+  document.getElementById('stats').textContent=rows.length+' משתמשים | '+
+    rows.filter(function(r){return r.active;}).length+' פעילים';
+  var tb=document.getElementById('tbody');
+  tb.innerHTML='';
+  rows.forEach(function(r){ tb.appendChild(makeRow(r,false)); });
+}
+
+function issueOptions(selId){
+  var opts='<option value="">— ללא —</option>';
+  issues.forEach(function(i){
+    opts+='<option value="'+i.id+'"'+(i.id==selId?' selected':'')+'>'+esc(i.title)+'</option>';
+  });
+  return opts;
+}
+
+function makeRow(r, isNew){
+  var tr=document.createElement('tr');
+  if(isNew) tr.classList.add('new-row');
+  tr.dataset.id=r.id||'';
+  var lastSeen=r.last_seen?new Date(r.last_seen).toLocaleString('he-IL'):'—';
+  tr.innerHTML=
+    '<td><input class="cell-input" data-f="name" value="'+esc(r.name||'')+'" placeholder="שם" oninput="markDirty(this)"></td>'+
+    '<td><select class="cell-input" data-f="active" onchange="markDirty(this)">'+
+      '<option value="1"'+(r.active?' selected':'')+'>פעיל</option>'+
+      '<option value="0"'+(!r.active?' selected':'')+'>לא פעיל</option>'+
+    '</select></td>'+
+    '<td><select class="cell-input" data-f="play_speed" onchange="markDirty(this)">'+
+      '<option value="0.6"'+(r.play_speed==0.6?' selected':'')+'>x0.6</option>'+
+      '<option value="1"'+(r.play_speed==1||!r.play_speed?' selected':'')+'>x1</option>'+
+      '<option value="1.2"'+(r.play_speed==1.2?' selected':'')+'>x1.2</option>'+
+      '<option value="1.5"'+(r.play_speed==1.5?' selected':'')+'>x1.5</option>'+
+    '</select></td>'+
+    '<td><select class="cell-input" data-f="show_greeting" onchange="markDirty(this)">'+
+      '<option value="1"'+(r.show_greeting?' selected':'')+'>כן</option>'+
+      '<option value="0"'+(!r.show_greeting?' selected':'')+'>לא</option>'+
+    '</select></td>'+
+    '<td><select class="cell-input" data-f="issue_id" onchange="markDirty(this)">'+issueOptions(r.issue_id)+'</select></td>'+
+    '<td class="muted">'+lastSeen+'</td>'+
+    '<td><button class="del-btn" onclick="delRow(this)">מחק</button></td>';
+  return tr;
+}
+
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function markDirty(el){
+  el.closest('tr').classList.add('dirty');
+  document.getElementById('saveAllBtn').classList.add('vis');
+}
+
+function addRow(){
+  var tb=document.getElementById('tbody');
+  var tr=makeRow({name:'',active:true,play_speed:1,show_greeting:true,issue_id:null},true);
+  tb.insertBefore(tr, tb.firstChild);
+  tr.querySelector('[data-f=name]').focus();
+  tr.classList.add('dirty');
+  document.getElementById('saveAllBtn').classList.add('vis');
+}
+
+async function saveAll(){
+  var btn=document.getElementById('saveAllBtn');
+  btn.textContent='שומר...'; btn.disabled=true;
+  var trs=document.querySelectorAll('#tbody tr.dirty');
+  var promises=[];
+  trs.forEach(function(tr){
+    var name=tr.querySelector('[data-f=name]').value.trim();
+    if(!name) return;
+    var payload={
+      id: tr.dataset.id||null,
+      name: name,
+      active: tr.querySelector('[data-f=active]').value==='1',
+      play_speed: parseFloat(tr.querySelector('[data-f=play_speed]').value),
+      show_greeting: tr.querySelector('[data-f=show_greeting]').value==='1',
+      issue_id: tr.querySelector('[data-f=issue_id]').value||null
+    };
+    promises.push(fetch('/api/users/save',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)}));
+  });
+  await Promise.all(promises);
+  btn.textContent='💾 שמור הכל'; btn.disabled=false;
+  btn.classList.remove('vis');
+  showToast('נשמר!');
+  await load();
+}
+
+async function delRow(btn){
+  var tr=btn.closest('tr');
+  var id=tr.dataset.id;
+  var name=tr.querySelector('[data-f=name]').value;
+  if(id && !confirm('למחוק את "'+name+'"?')) return;
+  if(id){
+    await fetch('/api/users/delete',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:parseInt(id)})});
+    await load();
+  } else {
+    tr.remove();
+  }
 }
 
 function showToast(msg){
