@@ -1198,6 +1198,18 @@ function doLogin(name, onDone){
 // ── Load ─────────────────────────────────────────────────────────
 async function load(){
   await loadAbbreviations();
+  // Restore currentUser from session if not already set
+  if(!currentUser){
+    var wr=await fetch('/api/whoami');
+    var wd=await wr.json();
+    if(wd.logged_in){
+      currentUser={name:wd.name, show_greeting:wd.show_greeting, play_speed:wd.play_speed};
+      rate=wd.play_speed||1;
+      document.querySelectorAll('.sb').forEach(function(b){
+        b.classList.toggle('on',parseFloat(b.textContent.replace('x',''))===rate);
+      });
+    }
+  }
   var r=await fetch('/api/current');
   var d=await r.json();
   document.getElementById('ls').style.display='none';
@@ -1225,6 +1237,11 @@ async function load(){
     return;
   }
   S=d;
+  // Update user name display immediately
+  var blindName=document.getElementById('blind-user-name');
+  if(blindName) blindName.textContent=currentUser?currentUser.name:'';
+  var nameLbl=document.getElementById('user-name-lbl');
+  if(nameLbl) nameLbl.textContent=currentUser?currentUser.name:'';
   // Apply user speed
   if(currentUser && currentUser.play_speed){
     rate=currentUser.play_speed;
