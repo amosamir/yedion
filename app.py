@@ -457,8 +457,11 @@ def admin_users():
 @app.route("/api/users")
 def get_users():
     conn = get_db(); cur = conn.cursor()
-    cur.execute("""SELECT u.*, i.title as issue_title
-                   FROM users u LEFT JOIN issues i ON i.id=u.issue_id
+    cur.execute("""SELECT u.*, i.title as issue_title,
+                   s.title as segment_title
+                   FROM users u
+                   LEFT JOIN issues i ON i.id=u.issue_id
+                   LEFT JOIN segments s ON s.issue_id=u.issue_id AND s.position=u.segment_pos
                    ORDER BY u.last_seen DESC NULLS LAST""")
     rows = cur.fetchall()
     cur.close(); conn.close()
@@ -572,6 +575,18 @@ def whoami():
     return jsonify({"logged_in": True, "name": user["name"], "id": user["id"],
                     "play_speed": user["play_speed"],
                     "show_greeting": user["show_greeting"]})
+
+@app.route("/api/login_check", methods=["POST"])
+def login_check():
+    """Check if a username exists, without logging in."""
+    name = (request.json.get("name") or "").strip()
+    if not name:
+        return jsonify({"exists": False})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE name=%s", (name,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return jsonify({"exists": bool(row)})
 
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -979,6 +994,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 <!-- Blind screen -->
 <div id="blind">
   <div id="blind-top">
+    <div id="blind-user-name" style="font-size:13px;color:#2d5f3f;font-weight:700;text-align:center;min-height:18px"></div>
     <div id="blind-title">ידיעון בארות יצחק</div>
     <div id="blind-seg">טוען...</div>
     <div id="blind-pi">
@@ -1002,8 +1018,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);
   <button id="switch-issue-btn" onclick="startIssuePicker(false)">⇄ החלף ידיעון</button>
   <div id="user-bar">
     <span id="user-name-lbl"></span>
-    <button onclick="switchUser()" style="font-size:12px;padding:3px 10px;background:transparent;border:1px solid var(--border,#ccc);border-radius:6px;cursor:pointer;margin-right:6px">החלף משתמש</button>
-    <button onclick="doLogout()" style="font-size:12px;padding:3px 10px;background:transparent;border:1px solid var(--border,#ccc);border-radius:6px;cursor:pointer">התנתק</button>
+    <button onclick="switchUser()" style="font-size:12px;padding:4px 12px;background:transparent;border:1px solid var(--border,#ccc);border-radius:6px;cursor:pointer;margin-right:4px">החלף משתמש</button>
+    <button onclick="doLogout()" style="font-size:12px;padding:4px 12px;background:transparent;border:1px solid var(--border,#ccc);border-radius:6px;cursor:pointer;margin-right:4px">התנתק</button>
+    <button onclick="startLoginFlow(function(){sessionStorage.removeItem('greeted');load();})" style="font-size:12px;padding:4px 12px;background:transparent;border:1px solid var(--border,#ccc);border-radius:6px;cursor:pointer">התחבר</button>
   </div>
   <div id="hdr">
     <div id="issue-lbl">ידיעון</div>
@@ -1101,28 +1118,68 @@ function showDetail(){
 // ── Login flow ───────────────────────────────────────────────────
 var currentUser=null;
 
-async function startLoginFlow(onDone){
-  // Ask "מי אתה?" and listen for name
-  await new Promise(function(res){
-    unlockTTS();
-    setTimeout(function(){
-      sayHebrew('\u05de\u05d9 \u05d0\u05ea\u05d4?', function(){ res(); });
-    }, 300);
-  });
-  dictListenOnce(async function(heard){
-    var name=(heard||'').replace(/[.,!?]/g,'').trim();
-    if(!name){
-      sayHebrew('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
-      setTimeout(function(){ startLoginFlow(onDone); }, 2000);
-      return;
-    }
-    var r=await fetch('/api/login',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name:name})});
-    var d=await r.json();
+function startLoginFlow(onDone){
+  unlockTTS();
+  setTimeout(function(){
+    sayHebrew('\u05de\u05d9 \u05d0\u05ea\u05d4?', function(){
+      dictListenOnce(function(heard){
+        var name=(heard||'').replace(/[.,!?״׳]/g,'').trim();
+        if(!name){
+          sayHebrew('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
+          setTimeout(function(){ startLoginFlow(onDone); }, 2500);
+          return;
+        }
+        // Check if user exists
+        fetch('/api/login_check',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:name})
+        }).then(function(r){ return r.json(); }).then(function(d){
+          if(d.exists){
+            // Existing user — ask to confirm
+            sayHebrew('\u05d4\u05de\u05e9\u05ea\u05de\u05e9 '+name+' \u05db\u05d1\u05e8 \u05e7\u05d9\u05d9\u05dd. \u05d4\u05d0\u05dd \u05d6\u05d4 \u05d0\u05ea\u05d4?', function(){
+              dictListenOnce(function(ans){
+                var a=normH(ans||'');
+                if(/\u05db\u05df|\u05d1\u05e1\u05d3\u05e8|\u05e0\u05db\u05d5\u05df|\u05d0\u05d5\u05e7\u05d9|\u05d0\u05e0\u05d9/.test(a) && !/\u05dc\u05d0/.test(a)){
+                  // Yes — log in
+                  doLogin(name, onDone);
+                } else if(/\u05dc\u05d0/.test(a)){
+                  // No — ask for different name
+                  sayHebrew('\u05d0\u05d6 \u05d1\u05d7\u05e8 \u05d1\u05d1\u05e7\u05e9\u05d4 \u05e9\u05dd \u05d0\u05d7\u05e8.');
+                  setTimeout(function(){ startLoginFlow(onDone); }, 2500);
+                } else {
+                  // Unclear
+                  setTimeout(function(){ startLoginFlow(onDone); }, 1000);
+                }
+              });
+            });
+          } else {
+            // New user — confirm name before creating
+            sayHebrew('\u05e9\u05dd \u05d7\u05d3\u05e9: '+name+'. \u05d4\u05d0\u05dd \u05e0\u05db\u05d5\u05df?', function(){
+              dictListenOnce(function(ans){
+                var a=normH(ans||'');
+                if(/\u05db\u05df|\u05d1\u05e1\u05d3\u05e8|\u05e0\u05db\u05d5\u05df|\u05d0\u05d5\u05e7\u05d9/.test(a) && !/\u05dc\u05d0/.test(a)){
+                  doLogin(name, onDone);
+                } else {
+                  sayHebrew('\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
+                  setTimeout(function(){ startLoginFlow(onDone); }, 2000);
+                }
+              });
+            });
+          }
+        });
+      });
+    });
+  }, 300);
+}
+
+function doLogin(name, onDone){
+  fetch('/api/login',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:name})
+  }).then(function(r){ return r.json(); }).then(function(d){
     if(!d.ok){
       if(d.error==='inactive'){
-        sayHebrew('\u05de\u05e9\u05ea\u05de\u05e9 '+ name +' \u05d0\u05d9\u05e0\u05d5 \u05e4\u05e2\u05d9\u05dc.');
+        sayHebrew('\u05de\u05e9\u05ea\u05de\u05e9 '+name+' \u05d0\u05d9\u05e0\u05d5 \u05e4\u05e2\u05d9\u05dc.');
       } else {
         sayHebrew('\u05e9\u05d2\u05d9\u05d0\u05d4. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
         setTimeout(function(){ startLoginFlow(onDone); }, 2000);
@@ -1130,7 +1187,6 @@ async function startLoginFlow(onDone){
       return;
     }
     currentUser={name:d.name, show_greeting:d.show_greeting, play_speed:d.play_speed, new_user:d.new_user};
-    // Apply user settings
     rate=d.play_speed||1;
     document.querySelectorAll('.sb').forEach(function(b){
       b.classList.toggle('on',parseFloat(b.textContent.replace('x',''))===rate);
@@ -1169,6 +1225,13 @@ async function load(){
     return;
   }
   S=d;
+  // Apply user speed
+  if(currentUser && currentUser.play_speed){
+    rate=currentUser.play_speed;
+    document.querySelectorAll('.sb').forEach(function(b){
+      b.classList.toggle('on',parseFloat(b.textContent.replace('x',''))===rate);
+    });
+  }
   // Resume from saved chunk position if available
   chunkIdx=d.chunk_pos||0;
   render();
@@ -1214,9 +1277,11 @@ function render(){
   document.getElementById('pfill').style.width=
     ((S.current_position+1)/S.total*100)+'%';
   document.getElementById('ta').scrollTop=0;
-  // Show current user name
+  // Show current user name in both screens
   var nameLbl=document.getElementById('user-name-lbl');
   if(nameLbl) nameLbl.textContent=currentUser?currentUser.name:'';
+  var blindName=document.getElementById('blind-user-name');
+  if(blindName) blindName.textContent=currentUser?currentUser.name:'';
   updateBlindSeg();
   renderD();
 }
@@ -2106,6 +2171,15 @@ function handleCmd(heard, wasPlaying){
       setTimeout(function(){ location.reload(); }, 2000);
     });
   }
+  // ── התחבר
+  else if(/\u05d4\u05ea\u05d7\u05d1\u05e8/.test(h)){
+    done=true; label='\u05d4\u05ea\u05d7\u05d1\u05e8'; noEcho=true;
+    pause();
+    startLoginFlow(function(){
+      sessionStorage.removeItem('greeted');
+      load();
+    });
+  }
   // ── החלף משתמש
   else if(/\u05d4\u05d7\u05dc\u05e3/.test(h)&&/\u05de\u05e9\u05ea\u05de\u05e9/.test(h)){
     done=true; label='\u05d4\u05d7\u05dc\u05e3 \u05de\u05e9\u05ea\u05de\u05e9'; noEcho=true;
@@ -2904,6 +2978,7 @@ select.cell-input{cursor:pointer}
         <th>מהירות</th>
         <th>הודעת פתיחה</th>
         <th>ידיעון נוכחי</th>
+        <th>פרק נוכחי</th>
         <th>כניסה אחרונה</th>
         <th></th>
       </tr>
@@ -2962,6 +3037,7 @@ function makeRow(r, isNew){
       '<option value="0"'+(!r.show_greeting?' selected':'')+'>לא</option>'+
     '</select></td>'+
     '<td><select class="cell-input" data-f="issue_id" onchange="markDirty(this)">'+issueOptions(r.issue_id)+'</select></td>'+
+    '<td class="muted">'+esc(r.segment_title||'—')+'</td>'+
     '<td class="muted">'+lastSeen+'</td>'+
     '<td><button class="del-btn" onclick="delRow(this)">מחק</button></td>';
   return tr;
