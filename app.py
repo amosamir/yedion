@@ -221,12 +221,12 @@ def normalize_text_for_storage(text: str) -> str:
     of normalizeForSpeech() in JS.  Called on segment body/title before saving.
     ABBR_DICT expansion (ראשי תיבות) is intentionally left to the JS side.
     """
-    # 1. Remove characters iOS TTS reads as letter names
-    text = re.sub(r'[(){}\[\]<>]', ' ', text)
-    # 2. Remove symbols: /, \, |, ~, ^, @, #, *, +, =, %, &, $, `
-    text = re.sub(r'[/\\|~^@#*+=&$%`]', ' ', text)
-    # 3. Convert HH:MM time expressions to Hebrew words
+    # 1. Convert HH:MM time expressions to Hebrew words FIRST (before removing colons)
     text = _TIME_RE.sub(_time_to_hebrew, text)
+    # 2. Remove characters iOS TTS reads as letter names
+    text = re.sub(r'[(){}\[\]<>]', ' ', text)
+    # 3. Remove symbols: /, \, |, ~, ^, @, #, *, +, =, %, &, $, `
+    text = re.sub(r'[/\\|~^@#*+=&$%`]', ' ', text)
     # 4. Collapse multiple spaces / trim lines
     lines = []
     for line in text.split('\n'):
@@ -855,6 +855,23 @@ def delete_segment():
     """, (data["issue_id"],))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
+
+@app.route("/api/renormalize", methods=["POST"])
+def renormalize():
+    """Re-run normalize_text_for_storage on all existing segments (for already-uploaded issues)."""
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id, title, body FROM segments")
+    rows = cur.fetchall()
+    count = 0
+    for row in rows:
+        new_title = normalize_text_for_storage(row["title"])
+        new_body  = normalize_text_for_storage(row["body"])
+        if new_title != row["title"] or new_body != row["body"]:
+            cur.execute("UPDATE segments SET title=%s, body=%s WHERE id=%s",
+                        (new_title, new_body, row["id"]))
+            count += 1
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True, "updated": count})
 
 # ─── HTML TEMPLATES ──────────────────────────────────────────────────────────
 
@@ -3309,6 +3326,13 @@ a{margin-top:8px;display:inline-block;padding:16px 36px;
 <h1>סיום ההאזנה</h1>
 <p>אפשר לסגור את הדפדפן</p>
 <a href="/">חזור לאפליקציה</a>
+<script>
+// Push a dummy state so Back button stays on this page instead of going to the player
+history.pushState(null, '', window.location.href);
+window.addEventListener('popstate', function(){
+  history.pushState(null, '', window.location.href);
+});
+</script>
 </body>
 </html>"""
 
