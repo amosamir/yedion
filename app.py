@@ -182,6 +182,57 @@ def strip_nikud(text: str) -> str:
     text = re.sub(r" ?" + re.escape(_PH) + r" ?", "", text)
     return text
 
+# ── Hebrew number words for time normalization ────────────────────────────────
+_HE_HOURS = ['אפס','אחת','שתיים','שלוש','ארבע','חמש','שש','שבע','שמונה','תשע','עשר',
+    'אחת עשרה','שתים עשרה','שלוש עשרה','ארבע עשרה','חמש עשרה','שש עשרה',
+    'שבע עשרה','שמונה עשרה','תשע עשרה','עשרים','עשרים ואחת','עשרים ושתיים','עשרים ושלוש']
+_HE_MINUTES = ['','ואחת','ושתיים','ושלוש','וארבע','וחמש','ושש','ושבע',
+    'ושמונה','ותשע','ועשר','ואחת עשרה','ושתים עשרה','ושלוש עשרה','וארבע עשרה',
+    'וחמש עשרה','ושש עשרה','ושבע עשרה','ושמונה עשרה','ותשע עשרה','ועשרים',
+    'ועשרים ואחת','ועשרים ושתיים','ועשרים ושלוש','ועשרים וארבע','ועשרים וחמש',
+    'ועשרים ושש','ועשרים ושבע','ועשרים ושמונה','ועשרים ותשע','ושלושים',
+    'ושלושים ואחת','ושלושים ושתיים','ושלושים ושלוש','ושלושים וארבע',
+    'ושלושים וחמש','ושלושים ושש','ושלושים ושבע','ושלושים ושמונה',
+    'ושלושים ותשע','וארבעים','וארבעים ואחת','וארבעים ושתיים','וארבעים ושלוש',
+    'וארבעים וארבע','וארבעים וחמש','וארבעים ושש','וארבעים ושבע',
+    'וארבעים ושמונה','וארבעים ותשע','וחמישים','וחמישים ואחת',
+    'וחמישים ושתיים','וחמישים ושלוש','וחמישים וארבע','וחמישים וחמש',
+    'וחמישים ושש','וחמישים ושבע','וחמישים ושמונה','וחמישים ותשע']
+
+_TIME_RE = re.compile(r'(?<!\d)(\d{1,2}):(\d{2})(?!\d)')
+
+def _time_to_hebrew(m: re.Match) -> str:
+    """Convert HH:MM (PDF order reversed) to Hebrew words."""
+    a, b = int(m.group(1)), int(m.group(2))
+    # PDF RTL swap: printed 18:43 arrives as a=18, b=43 — but sometimes reversed
+    h_num, min_num = b, a  # swap: right side = hours, left = minutes
+    if h_num >= 24 or min_num >= 60:
+        # Try non-swapped
+        h_num, min_num = a, b
+        if h_num >= 24 or min_num >= 60:
+            return m.group(0)  # can't parse, keep original
+    h_str = _HE_HOURS[h_num] if h_num < len(_HE_HOURS) else str(h_num)
+    m_str = (' ' + _HE_MINUTES[min_num]) if min_num > 0 else ''
+    return h_str + m_str
+
+def normalize_text_for_storage(text: str) -> str:
+    """
+    Normalize text for storage and display — mirrors the non-ABBR_DICT parts
+    of normalizeForSpeech() in JS.  Called on segment body/title before saving.
+    ABBR_DICT expansion (ראשי תיבות) is intentionally left to the JS side.
+    """
+    # 1. Remove characters iOS TTS reads as letter names
+    text = re.sub(r'[(){}\[\]<>]', ' ', text)
+    # 2. Remove symbols: /, \, |, ~, ^, @, #, *, +, =, %, &, $, `
+    text = re.sub(r'[/\\|~^@#*+=&$%`]', ' ', text)
+    # 3. Convert HH:MM time expressions to Hebrew words
+    text = _TIME_RE.sub(_time_to_hebrew, text)
+    # 4. Collapse multiple spaces / trim lines
+    lines = []
+    for line in text.split('\n'):
+        lines.append(re.sub(r' {2,}', ' ', line).strip())
+    return '\n'.join(lines)
+
 def rejoin_spaced_letters(line: str) -> str:
     """If a line consists almost entirely of single Hebrew letters (with optional punctuation), join the letters."""
     tokens = [t for t in line.split(" ") if t]
@@ -525,9 +576,11 @@ def upload():
                     (title, datetime.now().isoformat()))
         issue_id = cur.fetchone()["id"]
         for i, seg in enumerate(segments):
+            clean_title = normalize_text_for_storage(seg["title"])
+            clean_body  = normalize_text_for_storage(seg["body"])
             cur.execute(
                 "INSERT INTO segments (issue_id, position, title, body) VALUES (%s,%s,%s,%s)",
-                (issue_id, i, seg["title"], seg["body"])
+                (issue_id, i, clean_title, clean_body)
             )
         cur.execute("UPDATE listener_state SET issue_id=%s, segment_position=0 WHERE id=1",
                     (issue_id,))
@@ -1457,62 +1510,22 @@ function expandLetterNames(word){
 }
 
 function normalizeForSpeech(text){
-  // Pre-clean: remove characters iOS TTS reads aloud as letter names
-  // Parentheses, brackets, special punctuation
-  text=text.replace(/[()[\]{}<>]/g,' ');
-  // Standalone apostrophe/geresh not attached to Hebrew letter
-  text=text.replace(/(?<![א-ת])['\u05f3]/g,' ');
-  // Dashes/hyphens between words → short pause (comma)
-  text=text.replace(/\s*[-–—]\s*/g,' — ');
-  // Remove other symbols iOS tends to read: /, \, |, ~, ^, @, #, *, +, =, %, &, $
-  text=text.replace(/[\/\\|~^@#*+=&$%`]/g,' ');
-  // Collapse multiple spaces
-  text=text.replace(/ {2,}/g,' ').trim();
-  // 0. Normalize time expressions: 26:17 → "שש עשרה עשרים ושש" (hours:minutes)
-  //    Pattern: digits:digits where right side is 0-59 (minutes)
-  text=text.replace(/(?<!\d)(\d{1,2}):(\d{1,2})(?!\d)/g,function(m,a,b){
-    var hNum=parseInt(b,10), mNum=parseInt(a,10);
-    if(hNum>=24||mNum>=60) return m;
-    var heHours=['אפס','אחת','שתיים','שלוש','ארבע','חמש','שש','שבע','שמונה','תשע','עשר',
-      'אחת עשרה','שתים עשרה','שלוש עשרה','ארבע עשרה','חמש עשרה','שש עשרה',
-      'שבע עשרה','שמונה עשרה','תשע עשרה','עשרים','עשרים ואחת','עשרים ושתיים',
-      'עשרים ושלוש'];
-    var heMinutes=['','ואחת','ושתיים','ושלוש','וארבע','וחמש','ושש','ושבע',
-      'ושמונה','ותשע','ועשר','ואחת עשרה','ושתים עשרה','ושלוש עשרה','וארבע עשרה',
-      'וחמש עשרה','ושש עשרה','ושבע עשרה','ושמונה עשרה','ותשע עשרה','ועשרים',
-      'ועשרים ואחת','ועשרים ושתיים','ועשרים ושלוש','ועשרים וארבע','ועשרים וחמש',
-      'ועשרים ושש','ועשרים ושבע','ועשרים ושמונה','ועשרים ותשע','ושלושים',
-      'ושלושים ואחת','ושלושים ושתיים','ושלושים ושלוש','ושלושים וארבע',
-      'ושלושים וחמש','ושלושים ושש','ושלושים ושבע','ושלושים ושמונה',
-      'ושלושים ותשע','וארבעים','וארבעים ואחת','וארבעים ושתיים','וארבעים ושלוש',
-      'וארבעים וארבע','וארבעים וחמש','וארבעים ושש','וארבעים ושבע',
-      'וארבעים ושמונה','וארבעים ותשע','וחמישים','וחמישים ואחת',
-      'וחמישים ושתיים','וחמישים ושלוש','וחמישים וארבע','וחמישים וחמש',
-      'וחמישים ושש','וחמישים ושבע','וחמישים ושמונה','וחמישים ותשע'];
-    var hStr=hNum<heHours.length?heHours[hNum]:String(hNum);
-    var mStr=mNum===0?'':' '+heMinutes[mNum];
-    return hStr+mStr;
-  });
+  // Note: punctuation, brackets, symbols, and time expressions (HH:MM)
+  // are already normalized server-side before storage.
+  // This function handles only the parts that depend on ABBR_DICT (loaded at runtime).
+
   // 1. Replace gershayim words
   text=text.replace(/([\u05d0-\u05ea]{1,8})["\u05f4]([\u05d0-\u05ea]{1,3})/g,
     function(match, pre, post){
-      // Gershayim valid only before last letter (post must be exactly 1 letter)
-      if(post.length!==1){
-        // Invalid position — strip gershayim and return plain letters
-        return pre+post;
-      }
-      // DB dictionary lookup first
+      if(post.length!==1){ return pre+post; }
       if(ABBR_DICT[match])return ABBR_DICT[match];
       var letters=pre+post;
       var totalLen=letters.length;
-      // Hebrew year: 4 letters starting with ת + century letter
       if(totalLen===4 && letters[0]==='\u05ea' &&
          '\u05e9\u05e8\u05e7\u05e6\u05e0\u05de\u05dc\u05db\u05d9'.indexOf(letters[1])>=0){
         return expandLetterNames(letters);
       }
-      // Long acronym (4+ letters, not a year) → strip gershayim only
       if(totalLen>=4) return letters;
-      // Short (2-3 letters) → expand to letter names
       return expandLetterNames(letters);
     });
   // 2. Geresh after single letter: ד' → look up in ABBR_DICT first, else letter name
@@ -2069,16 +2082,30 @@ function dictEnd(){
 }
 
 // sayHebrew with onEnd callback
+// Uses real utt.onend + safety timeout fallback — no more fixed setTimeout estimate
 function sayHebrew(text, onEnd){
-  if(!onEnd){ synth.cancel(); }
+  synth.cancel();
   var u=new SpeechSynthesisUtterance(text);
   u.lang='he-IL'; u.rate=rate;
   if(heVoice) u.voice=heVoice;
   if(onEnd){
-    // Estimate duration and fire callback after speech completes
-    // Hebrew TTS ~70ms/char at rate=1, +1.5s safety margin
-    var estMs=Math.max(3000, Math.round(text.length * 70 / rate) + 1500);
-    setTimeout(onEnd, estMs);
+    var fired=false;
+    var safetyMs=Math.max(4000, Math.round(text.length * 80 / rate) + 2000);
+    var safetyTimer=setTimeout(function(){
+      if(!fired){ fired=true; onEnd(); }
+    }, safetyMs);
+    u.onend=function(){
+      clearTimeout(safetyTimer);
+      if(!fired){
+        fired=true;
+        // Small gap after speech ends before opening mic — avoids capturing echo
+        setTimeout(onEnd, 300);
+      }
+    };
+    u.onerror=function(){
+      clearTimeout(safetyTimer);
+      if(!fired){ fired=true; setTimeout(onEnd, 300); }
+    };
   }
   synth.speak(u);
 }
@@ -2142,7 +2169,9 @@ function dictListenOnce(callback){
     // If recognition ended without result (e.g. network), finalize with what we have
     if(!handled){ fin(lastHeard); }
   };
-  var voDelay=/iPhone|iPad/.test(navigator.userAgent)?1200:800;
+  // Since sayHebrew now waits for real TTS onend before calling us,
+  // we only need a short delay for iOS mic to initialize
+  var voDelay=/iPhone|iPad/.test(navigator.userAgent)?400:100;
   setTimeout(function(){ try{r2.start();}catch(e){ dictDebug('err: '+e); } }, voDelay);
 }
 
