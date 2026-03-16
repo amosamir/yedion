@@ -199,18 +199,26 @@ _HE_MINUTES = ['','ואחת','ושתיים','ושלוש','וארבע','וחמש'
     'וחמישים ושתיים','וחמישים ושלוש','וחמישים וארבע','וחמישים וחמש',
     'וחמישים ושש','וחמישים ושבע','וחמישים ושמונה','וחמישים ותשע']
 
-_TIME_RE = re.compile(r'(?<!\d)(\d{1,2}):(\d{2})(?!\d)')
+_TIME_RE = re.compile(r'(?<!\d)(\d{1,2}):(\d{1,2})(?!\d)')
 
 def _time_to_hebrew(m: re.Match) -> str:
-    """Convert HH:MM (PDF order reversed) to Hebrew words."""
+    """Convert HH:MM to Hebrew words. PDF RTL sometimes reverses the digits."""
     a, b = int(m.group(1)), int(m.group(2))
-    # PDF RTL swap: printed 18:43 arrives as a=18, b=43 — but sometimes reversed
-    h_num, min_num = b, a  # swap: right side = hours, left = minutes
-    if h_num >= 24 or min_num >= 60:
-        # Try non-swapped
-        h_num, min_num = a, b
-        if h_num >= 24 or min_num >= 60:
-            return m.group(0)  # can't parse, keep original
+    # a:b — decide which is hours and which is minutes
+    # Valid time: hours 0-23, minutes 0-59
+    a_valid = a <= 23 and b <= 59
+    b_valid = b <= 23 and a <= 59
+    if a_valid and not b_valid:
+        h_num, min_num = a, b          # normal order
+    elif b_valid and not a_valid:
+        h_num, min_num = b, a          # PDF RTL swap
+    elif a_valid and b_valid:
+        # Both valid — PDF often reverses, so prefer swap when a > 23 is impossible
+        # Heuristic: if a > b it's more likely h:m (e.g. 17:26 not 26:17)
+        # But PDF gives us reversed, so if a looks like minutes (>23) swap
+        h_num, min_num = (b, a) if a > 23 else (a, b)
+    else:
+        return m.group(0)  # neither valid, keep original
     h_str = _HE_HOURS[h_num] if h_num < len(_HE_HOURS) else str(h_num)
     m_str = (' ' + _HE_MINUTES[min_num]) if min_num > 0 else ''
     return h_str + m_str
@@ -856,7 +864,7 @@ def delete_segment():
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
-@app.route("/api/renormalize", methods=["POST"])
+@app.route("/api/renormalize", methods=["POST", "GET"])
 def renormalize():
     """Re-run normalize_text_for_storage on all existing segments (for already-uploaded issues)."""
     conn = get_db(); cur = conn.cursor()
