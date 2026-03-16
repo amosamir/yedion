@@ -532,9 +532,11 @@ def save_user():
     conn = get_db(); cur = conn.cursor()
     if data.get("id"):
         cur.execute("""UPDATE users SET name=%s, active=%s, play_speed=%s,
-                       show_greeting=%s WHERE id=%s""",
+                       show_greeting=%s, issue_id=%s WHERE id=%s""",
                     (data["name"], data["active"], data["play_speed"],
-                     data["show_greeting"], data["id"]))
+                     data["show_greeting"],
+                     data.get("issue_id") or None,
+                     data["id"]))
     else:
         issue_id = get_latest_issue_id()
         cur.execute("""INSERT INTO users (name, active, issue_id, segment_pos,
@@ -1888,7 +1890,10 @@ function startListen(){
   unlockTTS(); // must be first — unlocks iOS TTS within this user gesture
   if(greetingActive) return; // don't interrupt greeting
   if(!S){
-    sayHebrew('\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05de\u05d9\u05df');
+    // No active issue — go straight to issue picker
+    sayHebrew('\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05e4\u05e2\u05d9\u05dc. \u05d0\u05d9\u05d6\u05d4 \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05dc\u05d4\u05e4\u05e2\u05d9\u05dc?', function(){
+      startIssuePicker(false);
+    });
     return;
   }
   if(!SpeechRec){
@@ -2343,7 +2348,9 @@ function handleCmd(heard, wasPlaying){
     pause();
     sayHebrew('\u05e9\u05dc\u05d5\u05dd... \u05e9\u05dc\u05d5\u05dd.');
     setTimeout(function(){
-      // Replace history entry so Back button won't return to the player
+      // Push extra history entries so Back button lands on /bye, not the player
+      history.pushState(null,'','/bye');
+      history.pushState(null,'','/bye');
       window.location.replace('/bye');
     },1800);
   }
