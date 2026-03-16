@@ -497,7 +497,8 @@ def set_speed():
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
-
+@app.route("/api/users/delete", methods=["POST"])
+def delete_user():
     data = request.json
     conn = get_db(); cur = conn.cursor()
     cur.execute("DELETE FROM users WHERE id=%s", (data["id"],))
@@ -1060,6 +1061,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 <script>
 var S=null,synth=window.speechSynthesis,utt=null,playing=false,rate=1,heVoice=null,greetingActive=false,wakeLock=null;
 var currentScreen='blind';
+var chunks=[],chunkIdx=0,chunkStopped=false;
+var articleBreaks=[],currentArticle=0;
 
 // ── Voices ──────────────────────────────────────────────────────
 function initV(){
@@ -1339,9 +1342,6 @@ function renderD(){
 // ── Playback ─────────────────────────────────────────────────────
 // Chunk-based playback: text split into ~5-word chunks.
 // pause() saves current chunk index → resume() restarts from that chunk.
-var chunks=[];          // array of strings for current segment
-var chunkIdx=0;         // chunk currently being spoken (or next to speak)
-var chunkStopped=false; // flag to stop the loop
 
 var MAX_WORDS=20;
 var COMMA_MIN=15;
@@ -1457,6 +1457,17 @@ function expandLetterNames(word){
 }
 
 function normalizeForSpeech(text){
+  // Pre-clean: remove characters iOS TTS reads aloud as letter names
+  // Parentheses, brackets, special punctuation
+  text=text.replace(/[()[\]{}<>]/g,' ');
+  // Standalone apostrophe/geresh not attached to Hebrew letter
+  text=text.replace(/(?<![א-ת])['\u05f3]/g,' ');
+  // Dashes/hyphens between words → short pause (comma)
+  text=text.replace(/\s*[-–—]\s*/g,' — ');
+  // Remove other symbols iOS tends to read: /, \, |, ~, ^, @, #, *, +, =, %, &, $
+  text=text.replace(/[\/\\|~^@#*+=&$%`]/g,' ');
+  // Collapse multiple spaces
+  text=text.replace(/ {2,}/g,' ').trim();
   // 0. Normalize time expressions: 26:17 → "שש עשרה עשרים ושש" (hours:minutes)
   //    Pattern: digits:digits where right side is 0-59 (minutes)
   text=text.replace(/(?<!\d)(\d{1,2}):(\d{1,2})(?!\d)/g,function(m,a,b){
@@ -1532,16 +1543,112 @@ function releaseWakeLock(){
 function speak(){
   if(!S)return;
   var seg=S.segments[S.current_position];
-  // Build chunks: title first, then 1s pause marker, then body
+  // Build chunks: title first, then 1s pause marker, then body (with article breaks)
   var titleChunks=splitChunks(normalizeForSpeech(seg.title));
-  var bodyChunks=splitChunks(normalizeForSpeech(seg.body));
+  // Parse articles from body and build chunks with article-break markers
+  var bodyChunks=buildBodyChunksWithArticles(seg.body);
   chunks=titleChunks.concat(['__PAUSE1__']).concat(bodyChunks);
+  // Build article index: positions of __ARTICLE_BREAK__ + start
+  articleBreaks=buildArticleBreakIndex(titleChunks.length+1, bodyChunks);
+  currentArticle=0;
   chunkIdx=0;
   synth.cancel();
   chunkStopped=false;
   acquireWakeLock();
   onSpeakStart();
   _nextChunk();
+}
+
+// Parse body into articles separated by headings (short lines after blank line)
+// Returns array of {heading, body} same as Python split_into_articles logic
+function parseArticles(bodyText){
+  var lines=bodyText.split('\n');
+  var articles=[];
+  var curHead='';
+  var curLines=[];
+  function flush(){
+    var b=curLines.join('\n').trim();
+    if(b||curHead) articles.push({heading:curHead,body:b});
+  }
+  for(var i=0;i<lines.length;i++){
+    var line=lines[i].trim();
+    var prevBlank=(i>0 && !lines[i-1].trim());
+    if((prevBlank||i===0) && line && line.length<=40
+       && /[\u05d0-\u05ea]/.test(line)){
+      // Peek: next non-blank line
+      var j=i+1;
+      while(j<lines.length && !lines[j].trim()) j++;
+      var nextContent=j<lines.length?lines[j].trim():'';
+      if(!nextContent||nextContent.length>line.length){
+        flush();
+        curHead=line; curLines=[]; continue;
+      }
+    }
+    curLines.push(lines[i]);
+  }
+  flush();
+  return articles;
+}
+
+// Build body chunks with __ARTICLE_BREAK__ markers between articles
+function buildBodyChunksWithArticles(bodyText){
+  var articles=parseArticles(bodyText);
+  if(articles.length<=1){
+    return splitChunks(normalizeForSpeech(bodyText));
+  }
+  var result=[];
+  articles.forEach(function(art,idx){
+    if(idx>0) result.push('__ARTICLE_BREAK__');
+    if(art.heading){
+      result=result.concat(splitChunks(normalizeForSpeech(art.heading)));
+    }
+    if(art.body){
+      result=result.concat(splitChunks(normalizeForSpeech(art.body)));
+    }
+  });
+  return result;
+}
+
+// Build array of chunk indices where each article starts (after title+PAUSE1)
+function buildArticleBreakIndex(bodyStartIdx, bodyChunks){
+  var breaks=[bodyStartIdx]; // article 0 starts at body start
+  for(var i=0;i<bodyChunks.length;i++){
+    if(bodyChunks[i]==='__ARTICLE_BREAK__'){
+      breaks.push(bodyStartIdx+i+1); // article N starts after the break marker
+    }
+  }
+  return breaks;
+}
+
+// Article-level navigation: d=1 next article, d=-1 prev article
+function articleNav(d){
+  if(!S||!articleBreaks||articleBreaks.length<=1){
+    // No multiple articles — fall back to segment nav
+    nav(d); return;
+  }
+  var wasPlaying=playing;
+  pause();
+  // Find which article we're currently in
+  var cur=0;
+  for(var i=articleBreaks.length-1;i>=0;i--){
+    if(chunkIdx>=articleBreaks[i]){cur=i;break;}
+  }
+  var target=cur+d;
+  if(target<0) target=0;
+  if(target>=articleBreaks.length) target=articleBreaks.length-1;
+  currentArticle=target;
+  chunkIdx=articleBreaks[target];
+  chunkStopped=false;
+  savePos(S.current_position, chunkIdx);
+  if(wasPlaying){
+    acquireWakeLock(); onSpeakStart(); _nextChunk();
+  } else {
+    // Say the article heading
+    var seg=S.segments[S.current_position];
+    var arts=parseArticles(seg.body);
+    var art=arts[target];
+    if(art&&art.heading) sayHebrew(art.heading);
+  }
 }
 
 function resume(){
@@ -1562,6 +1669,17 @@ function _nextChunk(){
   var text=chunks[chunkIdx];
   // Pause marker — wait 1 second then continue
   if(text==='__PAUSE1__'){
+    savePos(S.current_position, chunkIdx);
+    chunkIdx++;
+    setTimeout(function(){ if(!chunkStopped&&playing) _nextChunk(); }, 1000);
+    return;
+  }
+  // Article break marker — 1 second pause between articles
+  if(text==='__ARTICLE_BREAK__'){
+    // Update currentArticle counter
+    for(var ai=0;ai<articleBreaks.length;ai++){
+      if(articleBreaks[ai]===chunkIdx+1) currentArticle=ai;
+    }
     savePos(S.current_position, chunkIdx);
     chunkIdx++;
     setTimeout(function(){ if(!chunkStopped&&playing) _nextChunk(); }, 1000);
@@ -1596,6 +1714,7 @@ function pause(){
 function stop(){
   chunkStopped=true;
   chunks=[]; chunkIdx=0;
+  articleBreaks=[]; currentArticle=0;
   synth.cancel();
   releaseWakeLock();
   setIdle();
@@ -2170,12 +2289,9 @@ function handleCmd(heard, wasPlaying){
     pause();
     sayHebrew('\u05e9\u05dc\u05d5\u05dd... \u05e9\u05dc\u05d5\u05dd.');
     setTimeout(function(){
-      window.close();
-      setTimeout(function(){
-        document.getElementById('blind').style.display='none';
-        document.getElementById('end-screen').style.display='flex';
-      },400);
-    },600);
+      // Replace history entry so Back button won't return to the player
+      window.location.replace('/bye');
+    },1800);
   }
   // ── התנתק
   else if(/\u05d4\u05ea\u05e0\u05ea\u05e7/.test(h)){
@@ -2228,6 +2344,13 @@ function handleCmd(heard, wasPlaying){
   else if(/\u05d4\u05e4\u05e2\u05dc|\u05d4\u05ea\u05d7\u05dc|\u05e7\u05e8\u05d0|\u05e7\u05e8\u05d9\u05d0\u05d4|\u05d4\u05e7\u05e8\u05d0/.test(h)){
     done=true; label='\u05d4\u05e4\u05e2\u05dc'; noEcho=true;
     speak();
+  }
+  // ── המאמר הבא / המאמר הקודם
+  if(/\u05de\u05d0\u05de\u05e8/.test(h)&&/\u05d4\u05d1\u05d0|\u05d4\u05d1\u05d0\u05d4|\u05e7\u05d3\u05d9\u05de\u05d4|\u05d4\u05e7\u05d5\u05d3\u05dd/.test(h)){
+    done=true; noEcho=true;
+    var artD=/\u05d4\u05d1\u05d0|\u05d4\u05d1\u05d0\u05d4|\u05e7\u05d3\u05d9\u05de\u05d4/.test(h)?1:-1;
+    label=artD===1?'\u05de\u05d0\u05de\u05e8 \u05d4\u05d1\u05d0':'\u05de\u05d0\u05de\u05e8 \u05e7\u05d5\u05d3\u05dd';
+    articleNav(artD);
   }
   // ── קדימה / הבא / דלג / הקטע הבא
   else if(/\u05d4\u05d1\u05d0|\u05e7\u05d3\u05d9\u05de\u05d4|\u05d0\u05d1\u05d0|\u05d3\u05dc\u05d2/.test(h)&&!/\u05e7\u05d5\u05d3\u05dd/.test(h)){
@@ -2295,6 +2418,8 @@ function handleCmd(heard, wasPlaying){
       '\u05e2\u05e6\u05d5\u05e8, \u05e2\u05d5\u05e6\u05e8 \u05d0\u05ea \u05d4\u05e7\u05e8\u05d9\u05d0\u05d4. '+
       '\u05e7\u05d3\u05d9\u05de\u05d4, \u05e2\u05d5\u05d1\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05d1\u05d0. '+
       '\u05d0\u05d7\u05d5\u05e8\u05d4, \u05d7\u05d5\u05d6\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05e7\u05d5\u05d3\u05dd. '+
+      '\u05d4\u05de\u05d0\u05de\u05e8 \u05d4\u05d1\u05d0, \u05e7\u05d5\u05e4\u05e5 \u05dc\u05de\u05d0\u05de\u05e8 \u05d4\u05d1\u05d0 \u05d1\u05d0\u05d5\u05ea\u05d5 \u05e4\u05e8\u05e7. '+
+      '\u05d4\u05de\u05d0\u05de\u05e8 \u05d4\u05e7\u05d5\u05d3\u05dd, \u05d7\u05d5\u05d6\u05e8 \u05dc\u05de\u05d0\u05de\u05e8 \u05d4\u05e7\u05d5\u05d3\u05dd. '+
       '\u05e8\u05d0\u05e9\u05d5\u05df, \u05e2\u05d5\u05d1\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05e8\u05d0\u05e9\u05d5\u05df. '+
       '\u05d0\u05d7\u05e8\u05d5\u05df, \u05e2\u05d5\u05d1\u05e8 \u05dc\u05e7\u05d8\u05e2 \u05d4\u05d0\u05d7\u05e8\u05d5\u05df. '+
       '\u05e7\u05d8\u05e2 3, \u05e7\u05d5\u05e4\u05e5 \u05dc\u05e7\u05d8\u05e2 \u05de\u05e1\u05e4\u05e8 3. '+
@@ -3128,6 +3253,39 @@ load();
 </script>
 </body>
 </html>"""
+
+BYE_HTML = """<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>סיום האזנה</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#1a1a18;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:24px;
+  font-family:'Heebo',Helvetica,sans-serif;color:#fff;text-align:center;padding:24px}
+.ic{font-size:56px}
+h1{font-size:24px;font-weight:900}
+p{font-size:16px;color:#aaa}
+a{margin-top:8px;display:inline-block;padding:16px 36px;
+  background:#2d5f3f;color:#fff;border-radius:16px;
+  font-size:18px;font-weight:700;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="ic">🔇</div>
+<h1>סיום ההאזנה</h1>
+<p>אפשר לסגור את הדפדפן</p>
+<a href="/">חזור לאפליקציה</a>
+</body>
+</html>"""
+
+@app.route("/bye")
+def bye():
+    return render_template_string(BYE_HTML)
 
 # ─── STARTUP ─────────────────────────────────────────────────────────────────
 
