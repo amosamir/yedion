@@ -893,6 +893,7 @@ LISTENER_HTML = """<!DOCTYPE html>
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
 <title>ידיעון בארות יצחק</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;700;900&display=swap');
@@ -2284,9 +2285,9 @@ async function handleIssueChoice(heard){
     if(ni2>=0)targetIssue=issues[ni2];
     else{sayHebrew('\u05d0\u05d9\u05df \u05d2\u05d9\u05dc\u05d9\u05d5\u05df \u05d7\u05d3\u05e9 \u05d9\u05d5\u05ea\u05e8');return;}
   }
-  // "האחרון" / "הקובץ האחרון" — oldest = last in DESC list
+  // "האחרון" / "הגיליון האחרון" — newest = first in DESC list (id DESC)
   else if(/\u05d0\u05d7\u05e8\u05d5\u05df|\u05d0\u05d7\u05e8\u05d5\u05e0/.test(h)){
-    targetIssue=issues[issues.length-1];
+    targetIssue=issues[0];
   }
   // "גיליון מספר 3647" or "גיליון 3647"
   else if(/\u05d2\u05d9\u05dc\u05d9\u05d5\u05df/.test(h)){
@@ -2348,10 +2349,18 @@ function handleCmd(heard, wasPlaying){
     pause();
     sayHebrew('\u05e9\u05dc\u05d5\u05dd... \u05e9\u05dc\u05d5\u05dd.');
     setTimeout(function(){
-      // Push extra history entries so Back button lands on /bye, not the player
-      history.pushState(null,'','/bye');
-      history.pushState(null,'','/bye');
-      window.location.replace('/bye');
+      var isPWA = window.matchMedia('(display-mode: standalone)').matches
+                  || window.navigator.standalone === true;
+      if(isPWA){
+        // In PWA mode window.close() works and returns to home screen
+        window.close();
+        // Fallback if close didn't work
+        setTimeout(function(){ window.location.replace('/bye'); }, 500);
+      } else {
+        history.pushState(null,'','/bye');
+        history.pushState(null,'','/bye');
+        window.location.replace('/bye');
+      }
     },1800);
   }
   // ── התנתק
@@ -3350,6 +3359,29 @@ window.addEventListener('popstate', function(){
 </script>
 </body>
 </html>"""
+
+@app.route("/manifest.json")
+def manifest():
+    import json as _json
+    data = {
+        "name": "ידיעון בארות יצחק",
+        "short_name": "ידיעון",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0f0f12",
+        "theme_color": "#0f0f12",
+        "lang": "he",
+        "dir": "rtl",
+        "icons": [
+            {"src": "https://cdn.jsdelivr.net/npm/twemoji@14/assets/72x72/1f4d6.png",
+             "sizes": "72x72", "type": "image/png"},
+            {"src": "https://cdn.jsdelivr.net/npm/twemoji@14/assets/72x72/1f4d6.png",
+             "sizes": "192x192", "type": "image/png"}
+        ]
+    }
+    from flask import Response
+    return Response(_json.dumps(data, ensure_ascii=False),
+                    mimetype="application/manifest+json")
 
 @app.route("/bye")
 def bye():
