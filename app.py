@@ -1575,12 +1575,12 @@ function speak(){
 // Parse body into articles separated by headings (short lines after blank line)
 // Returns array of {heading, body} same as Python split_into_articles logic
 function parseArticles(bodyText){
-  var lines=bodyText.split(/\n/);
+  var lines=bodyText.split(String.fromCharCode(10));
   var articles=[];
   var curHead='';
   var curLines=[];
   function flush(){
-    var b=curLines.join('\u000a').trim();
+    var b=curLines.join(String.fromCharCode(10)).trim();
     if(b||curHead) articles.push({heading:curHead,body:b});
   }
   for(var i=0;i<lines.length;i++){
