@@ -531,12 +531,32 @@ def save_user():
     data = request.json
     conn = get_db(); cur = conn.cursor()
     if data.get("id"):
-        cur.execute("""UPDATE users SET name=%s, active=%s, play_speed=%s,
-                       show_greeting=%s, issue_id=%s WHERE id=%s""",
-                    (data["name"], data["active"], data["play_speed"],
-                     data["show_greeting"],
-                     data.get("issue_id") or None,
-                     data["id"]))
+        new_issue_id = data.get("issue_id") or None
+        # If issue changed, reset segment position to 0
+        cur.execute("SELECT issue_id FROM users WHERE id=%s", (data["id"],))
+        existing = cur.fetchone()
+        old_issue_id = existing["issue_id"] if existing else None
+        seg_pos = 0 if new_issue_id != old_issue_id else None
+        if seg_pos is not None:
+            cur.execute("""UPDATE users SET name=%s, active=%s, play_speed=%s,
+                           show_greeting=%s, issue_id=%s, segment_pos=0, chunk_pos=0
+                           WHERE id=%s""",
+                        (data["name"], data["active"], data["play_speed"],
+                         data["show_greeting"], new_issue_id, data["id"]))
+        else:
+            explicit_pos = data.get("segment_pos")
+            if explicit_pos is not None:
+                cur.execute("""UPDATE users SET name=%s, active=%s, play_speed=%s,
+                               show_greeting=%s, issue_id=%s, segment_pos=%s, chunk_pos=0
+                               WHERE id=%s""",
+                            (data["name"], data["active"], data["play_speed"],
+                             data["show_greeting"], new_issue_id,
+                             int(explicit_pos), data["id"]))
+            else:
+                cur.execute("""UPDATE users SET name=%s, active=%s, play_speed=%s,
+                               show_greeting=%s, issue_id=%s WHERE id=%s""",
+                            (data["name"], data["active"], data["play_speed"],
+                             data["show_greeting"], new_issue_id, data["id"]))
     else:
         issue_id = get_latest_issue_id()
         cur.execute("""INSERT INTO users (name, active, issue_id, segment_pos,
@@ -647,7 +667,8 @@ def login_check():
     if not name:
         return jsonify({"exists": False})
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE name=%s", (name,))
+    # Case-insensitive + strip to handle slight TTS variations
+    cur.execute("SELECT id FROM users WHERE lower(trim(name))=lower(%s)", (name,))
     row = cur.fetchone()
     cur.close(); conn.close()
     return jsonify({"exists": bool(row)})
@@ -658,7 +679,7 @@ def login():
     if not name:
         return jsonify({"ok": False, "error": "no_name"})
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE name=%s", (name,))
+    cur.execute("SELECT * FROM users WHERE lower(trim(name))=lower(%s)", (name,))
     user = cur.fetchone()
     if user:
         if not user["active"]:
@@ -1207,7 +1228,12 @@ function startLoginFlow(onDone){
   setTimeout(function(){
     sayHebrew('\u05de\u05d9 \u05d0\u05ea\u05d4?', function(){
       dictListenOnce(function(heard){
-        var name=(heard||'').replace(/[.,!?״׳]/g,'').trim();
+        // Strip nikud, taamim, punctuation, extra spaces — same as normH
+        var name=(heard||'')
+          .replace(/[\u0591-\u05c7]/g,'')   // nikud/taamim
+          .replace(/[.,!?״׳"'\-]/g,'')
+          .replace(/\s+/g,' ')
+          .trim();
         if(!name){
           sayHebrew('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
           setTimeout(function(){ startLoginFlow(onDone); }, 2500);
@@ -3227,6 +3253,17 @@ function issueOptions(selId){
   return opts;
 }
 
+function segOptions(issueId, curPos){
+  if(!issueId) return '<option value="0">—</option>';
+  var issue=issues.find(function(i){return i.id==issueId;});
+  var count=issue?issue.seg_count:0;
+  var opts='';
+  for(var i=0;i<count;i++){
+    opts+='<option value="'+i+'"'+(i==curPos?' selected':'')+'>פרק '+(i+1)+'</option>';
+  }
+  return opts||'<option value="0">פרק 1</option>';
+}
+
 function makeRow(r, isNew){
   var tr=document.createElement('tr');
   if(isNew) tr.classList.add('new-row');
@@ -3248,11 +3285,18 @@ function makeRow(r, isNew){
       '<option value="1"'+(r.show_greeting?' selected':'')+'>כן</option>'+
       '<option value="0"'+(!r.show_greeting?' selected':'')+'>לא</option>'+
     '</select></td>'+
-    '<td><select class="cell-input" data-f="issue_id" onchange="markDirty(this)">'+issueOptions(r.issue_id)+'</select></td>'+
-    '<td class="muted">'+esc(r.segment_title||'—')+'</td>'+
+    '<td><select class="cell-input" data-f="issue_id" onchange="issueChanged(this);markDirty(this)">'+issueOptions(r.issue_id)+'</select></td>'+
+    '<td><select class="cell-input" data-f="segment_pos" onchange="markDirty(this)">'+segOptions(r.issue_id, r.segment_pos)+'</select></td>'+
     '<td class="muted">'+lastSeen+'</td>'+
     '<td><button class="del-btn" onclick="delRow(this)">מחק</button></td>';
   return tr;
+}
+
+function issueChanged(sel){
+  var tr=sel.closest('tr');
+  var issueId=sel.value||null;
+  var segSel=tr.querySelector('[data-f=segment_pos]');
+  segSel.innerHTML=segOptions(issueId,0);
 }
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
@@ -3285,7 +3329,8 @@ async function saveAll(){
       active: tr.querySelector('[data-f=active]').value==='1',
       play_speed: parseFloat(tr.querySelector('[data-f=play_speed]').value),
       show_greeting: tr.querySelector('[data-f=show_greeting]').value==='1',
-      issue_id: tr.querySelector('[data-f=issue_id]').value||null
+      issue_id: tr.querySelector('[data-f=issue_id]').value||null,
+      segment_pos: parseInt(tr.querySelector('[data-f=segment_pos]').value)||0
     };
     promises.push(fetch('/api/users/save',{method:'POST',
       headers:{'Content-Type':'application/json'},
