@@ -1007,9 +1007,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 #user-name-lbl{flex:1;font-weight:700;color:var(--text)}
 
 #hdr{display:flex;flex-direction:column;gap:3px}
-#issue-lbl{font-size:11px;color:var(--accent);font-weight:700;
+#issue-lbl{font-size:11px;color:var(--accent);font-weight:700;unicode-bidi:plaintext;
   letter-spacing:.08em;text-transform:uppercase}
-#seg-lbl{font-size:21px;font-weight:900;line-height:1.2}
+#seg-lbl{font-size:21px;font-weight:900;line-height:1.2;unicode-bidi:plaintext}
 #pos-lbl{font-size:12px;color:var(--muted)}
 
 #pbar{height:3px;background:var(--border);border-radius:99px;overflow:hidden;flex-shrink:0}
@@ -1017,7 +1017,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 
 #ta{flex:1;background:var(--surface);border-radius:var(--r);padding:20px;
   overflow-y:auto;border:1px solid var(--border);-webkit-overflow-scrolling:touch}
-#body{font-size:19px;line-height:1.95;white-space:pre-wrap}
+#body{font-size:19px;line-height:1.95;white-space:pre-wrap;unicode-bidi:plaintext}
 
 #pi{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--accent);
   opacity:0;transition:opacity .3s;height:18px;flex-shrink:0}
