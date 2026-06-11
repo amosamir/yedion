@@ -1100,8 +1100,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 <div id="blind">
   <div id="blind-top">
     <div id="blind-user-name" style="font-size:13px;color:#2d5f3f;font-weight:700;text-align:center;min-height:18px"></div>
-    <div id="blind-title">ידיעון בארות יצחק</div>
-    <div id="blind-seg">טוען...</div>
+    <div id="blind-title" dir="auto">ידיעון בארות יצחק</div>
+    <div id="blind-seg" dir="auto">טוען...</div>
     <div id="blind-pi">
       <div class="bars"><span></span><span></span><span></span></div>
       <span style="font-size:13px;color:#2d5f3f">מקריא...</span>
@@ -1128,13 +1128,13 @@ html,body{height:100%;background:var(--bg);color:var(--text);
     <button onclick="startLoginFlow(function(){sessionStorage.removeItem('greeted');load();})" style="font-size:12px;padding:4px 12px;background:transparent;border:1px solid var(--border,#ccc);border-radius:6px;cursor:pointer">התחבר</button>
   </div>
   <div id="hdr">
-    <div id="issue-lbl">ידיעון</div>
-    <div id="seg-lbl">טוען...</div>
+    <div id="issue-lbl" dir="auto">ידיעון</div>
+    <div id="seg-lbl" dir="auto">טוען...</div>
     <div id="pos-lbl"></div>
   </div>
   <div id="pbar"><div id="pfill"></div></div>
   <div id="detail-phrase"></div>
-  <div id="ta"><div id="body"></div></div>
+  <div id="ta"><div id="body" dir="auto"></div></div>
   <div id="pi">
     <div class="bars"><span></span><span></span><span></span></div>
     <span>מקריא...</span>
