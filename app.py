@@ -775,6 +775,20 @@ def set_issue():
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
+@app.route("/api/activate_issue_all", methods=["POST"])
+def activate_issue_all():
+    """Set this issue as active for ALL users, resetting their position."""
+    data = request.json
+    issue_id = data.get("issue_id")
+    if not issue_id:
+        return jsonify({"ok": False})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE users SET issue_id=%s, segment_pos=0, chunk_pos=0",
+                (issue_id,))
+    count = cur.rowcount
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True, "updated": count})
+
 @app.route("/api/issues")
 def issues():
     conn = get_db(); cur = conn.cursor()
@@ -1412,7 +1426,7 @@ function render(){
   var bodyEl=document.getElementById('body');
   var bodyLines=(seg.body||'').split('\n');
   bodyEl.innerHTML=bodyLines.map(function(line){
-    var esc=line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var esc=line.replace(/&/g,'&amp;').replace(/[<]/g,'&lt;').replace(/[>]/g,'&gt;');
     return '<span dir="auto" style="display:block">'+esc+'</span>';
   }).join('');
   document.getElementById('pfill').style.width=
@@ -2886,8 +2900,11 @@ async function renameSeg(segId,issueId){
     body:JSON.stringify({segment_id:segId,title:val})});
 }
 async function activateIssue(id){
-  await fetch('/api/set_issue',{method:'POST',
+  if(!confirm('\u05dc\u05d4\u05e4\u05e2\u05d9\u05dc \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05d4 \u05dc\u05db\u05dc \u05d4\u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd \u05d5\u05dc\u05d0\u05e4\u05e1 \u05d0\u05ea \u05d4\u05e4\u05e8\u05e7 \u05e9\u05dc\u05d4\u05dd \u05dc\u05e4\u05e8\u05e7 1?'))return;
+  var r=await fetch('/api/activate_issue_all',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({issue_id:id})});
+  var d=await r.json();
+  if(d.ok) alert('\u05e2\u05d5\u05d3\u05db\u05df '+d.updated+' \u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd');
   loadIssues();
 }
 async function deleteIssue(id){
