@@ -269,18 +269,25 @@ def rejoin_spaced_letters(line: str) -> str:
 
 
 def fix_rtl_line(line: str) -> str:
-    """Reverse RTL line, but skip lines that are primarily Latin (English)."""
-    # Count Hebrew vs Latin characters
+    """Reverse RTL line for Hebrew, but restore English phrases that got reversed."""
     he = sum(1 for c in line if '\u05d0' <= c <= '\u05ea')
     lat = sum(1 for c in line if c.isalpha() and ord(c) < 0x250)
-    # If line is primarily Latin — don't reverse
-    if lat > he:
+    # Purely Latin line — don't reverse at all
+    if lat > 0 and he == 0:
         return line
+    # Reverse the whole line (fixes Hebrew RTL)
     reversed_line = line[::-1]
-    # Fix numbers that got reversed back
+    # Restore digit sequences that got reversed
     def fix_num(m):
         return m.group(0)[::-1]
-    return re.sub(r"\d+", fix_num, reversed_line)
+    reversed_line = re.sub(r'\d+', fix_num, reversed_line)
+    # Restore Latin phrases: a run of Latin letters/spaces/hyphens got fully reversed.
+    # We need to reverse each such run back to its original order.
+    def fix_latin_phrase(m):
+        return m.group(0)[::-1]
+    # Match runs of Latin chars including spaces between them
+    reversed_line = re.sub(r'[A-Za-z][A-Za-z0-9 \-]*[A-Za-z0-9]|[A-Za-z]', fix_latin_phrase, reversed_line)
+    return reversed_line
 
 def extract_text_from_pdf(path: str) -> str:
     pages = []
