@@ -235,7 +235,9 @@ def normalize_text_for_storage(text: str) -> str:
     text = re.sub(r'[(){}\[\]<>]', ' ', text)
     # 3. Remove symbols: /, \, |, ~, ^, @, #, *, +, =, %, &, $, `
     text = re.sub(r'[/\\|~^@#*+=&$%`]', ' ', text)
-    # 4. Collapse multiple spaces / trim lines
+    # 4. Strip apostrophe/geresh NOT preceded by a Hebrew letter (iOS reads these as hex)
+    text = re.sub(r"(?<![א-ת])['\u05f3]", '', text)
+    # 5. Collapse multiple spaces / trim lines
     lines = []
     for line in text.split('\n'):
         lines.append(re.sub(r' {2,}', ' ', line).strip())
@@ -1582,13 +1584,22 @@ function normalizeForSpeech(text){
       if(totalLen>=4) return letters;
       return expandLetterNames(letters);
     });
-  // 2. Geresh after single letter: ד' → look up in ABBR_DICT first, else letter name
-  text=text.replace(/([\u05d0-\u05ea])['\u05f3](?=\s|$)/g,
+  // 2. Geresh after Hebrew letter in any position:
+  //    ד' / ט' / ה'תשפ"ו — look up in ABBR_DICT first, else letter name or strip
+  //    Pattern: Hebrew letter + geresh, where geresh is NOT followed by another Hebrew letter
+  //    (that case is gershayim-style and handled above, or is a foreign-sound like ג'ירפה)
+  text=text.replace(/([\u05d0-\u05ea])['\u05f3](?![\u05d0-\u05ea])/g,
     function(m,ch){
       var key=ch+"'";
       if(ABBR_DICT[key]) return ABBR_DICT[key];
+      // Letters that commonly represent foreign sounds (keep as letter name):
+      // ג', ז', צ', ת', ד', ט' — but only before space or punctuation, not mid-word
       return LETTER_NAMES[ch]||ch;
     });
+  // 2b. Geresh as part of ה'שנה-style (apostrophe between Hebrew letters like ה'תשפ)
+  //     These slip through — strip any remaining geresh/apostrophe between Hebrew letters
+  text=text.replace(/([\u05d0-\u05ea])['\u05f3]([\u05d0-\u05ea])/g,
+    function(m,a,b){ return a+b; });
   // 3. Single isolated Hebrew letter → letter name
   text=text.replace(/(?<![^\u05d0-\u05ea\s])(^|\s)([\u05d0-\u05ea])(\s|$)/g,
     function(m,pre,ch,post){ return pre+(LETTER_NAMES[ch]||ch)+post; });
