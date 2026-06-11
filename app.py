@@ -269,9 +269,15 @@ def rejoin_spaced_letters(line: str) -> str:
 
 
 def fix_rtl_line(line: str) -> str:
-    """Reverse line for RTL fix, but also fix digit sequences that got reversed."""
+    """Reverse RTL line, but skip lines that are primarily Latin (English)."""
+    # Count Hebrew vs Latin characters
+    he = sum(1 for c in line if '\u05d0' <= c <= '\u05ea')
+    lat = sum(1 for c in line if c.isalpha() and ord(c) < 0x250)
+    # If line is primarily Latin — don't reverse
+    if lat > he:
+        return line
     reversed_line = line[::-1]
-    # Fix numbers: sequences of digits that were reversed need to be re-reversed
+    # Fix numbers that got reversed back
     def fix_num(m):
         return m.group(0)[::-1]
     return re.sub(r"\d+", fix_num, reversed_line)
@@ -1402,7 +1408,13 @@ function render(){
   document.getElementById('seg-lbl').textContent=seg.title;
   document.getElementById('pos-lbl').textContent=
     '\u05e7\u05d8\u05e2 '+(S.current_position+1)+' \u05de\u05ea\u05d5\u05da '+S.total;
-  document.getElementById('body').textContent=seg.body;
+  // Wrap each line in span dir=auto — fixes English lines displaying RTL
+  var bodyEl=document.getElementById('body');
+  var bodyLines=(seg.body||'').split('\n');
+  bodyEl.innerHTML=bodyLines.map(function(line){
+    var esc=line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return '<span dir="auto" style="display:block">'+esc+'</span>';
+  }).join('');
   document.getElementById('pfill').style.width=
     ((S.current_position+1)/S.total*100)+'%';
   document.getElementById('ta').scrollTop=0;
