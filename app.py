@@ -1424,7 +1424,7 @@ function render(){
     '\u05e7\u05d8\u05e2 '+(S.current_position+1)+' \u05de\u05ea\u05d5\u05da '+S.total;
   // Wrap each line in span dir=auto — fixes English lines displaying RTL
   var bodyEl=document.getElementById('body');
-  var bodyLines=(seg.body||'').split('\n');
+  var bodyLines=(seg.body||'').split(String.fromCharCode(10));
   bodyEl.innerHTML=bodyLines.map(function(line){
     var esc=line.replace(/&/g,'&amp;').replace(/[<]/g,'&lt;').replace(/[>]/g,'&gt;');
     return '<span dir="auto" style="display:block">'+esc+'</span>';
