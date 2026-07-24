@@ -235,9 +235,7 @@ def normalize_text_for_storage(text: str) -> str:
     text = re.sub(r'[(){}\[\]<>]', ' ', text)
     # 3. Remove symbols: /, \, |, ~, ^, @, #, *, +, =, %, &, $, `
     text = re.sub(r'[/\\|~^@#*+=&$%`]', ' ', text)
-    # 4. Strip apostrophe/geresh NOT preceded by a Hebrew letter (iOS reads these as hex)
-    text = re.sub(r"(?<![א-ת])['\u05f3]", '', text)
-    # 5. Collapse multiple spaces / trim lines
+    # 4. Collapse multiple spaces / trim lines
     lines = []
     for line in text.split('\n'):
         lines.append(re.sub(r' {2,}', ' ', line).strip())
@@ -269,35 +267,72 @@ def rejoin_spaced_letters(line: str) -> str:
 
 
 def fix_rtl_line(line: str) -> str:
-    """Reverse RTL line for Hebrew, but restore English phrases that got reversed."""
-    he = sum(1 for c in line if '\u05d0' <= c <= '\u05ea')
-    lat = sum(1 for c in line if c.isalpha() and ord(c) < 0x250)
-    # Purely Latin line — don't reverse at all
-    if lat > 0 and he == 0:
-        return line
-    # Reverse the whole line (fixes Hebrew RTL)
+    """Reverse line for RTL fix, but also fix digit sequences that got reversed."""
     reversed_line = line[::-1]
-    # Restore digit sequences that got reversed
+    # Fix numbers: sequences of digits that were reversed need to be re-reversed
     def fix_num(m):
         return m.group(0)[::-1]
-    reversed_line = re.sub(r'\d+', fix_num, reversed_line)
-    # Restore Latin phrases: a run of Latin letters/spaces/hyphens got fully reversed.
-    # We need to reverse each such run back to its original order.
-    def fix_latin_phrase(m):
-        return m.group(0)[::-1]
-    # Match runs of Latin chars including spaces between them
-    reversed_line = re.sub(r'[A-Za-z][A-Za-z0-9 \-]*[A-Za-z0-9]|[A-Za-z]', fix_latin_phrase, reversed_line)
-    return reversed_line
+    return re.sub(r"\d+", fix_num, reversed_line)
+
+# Fonts that lack unicode mapping — OCR needed
+_SCRIPT_FONTS = {"GuttmanYad-Brush", "GuttmanYad", "GuttmanYadBrush", "GuttmanKav"}
+
+def _ocr_page_region(fitz_page, bbox_rect):
+    """Render a region of a page and OCR it with Hebrew tesseract."""
+    try:
+        import pytesseract
+        from PIL import Image
+        import fitz as _fitz
+        mat = _fitz.Matrix(3, 3)  # ~216 DPI
+        pix = fitz_page.get_pixmap(matrix=mat, clip=bbox_rect)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        text = pytesseract.image_to_string(img, lang="heb", config="--psm 6")
+        return text.strip()
+    except Exception:
+        return ""
 
 def extract_text_from_pdf(path: str) -> str:
+    import fitz as _fitz
+    doc = _fitz.open(path)
     pages = []
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            raw = page.extract_text() or ""
-            lines = raw.split("\n")
-            # Fix RTL, then rejoin lines that were split into single letters by nikud
-            fixed = [rejoin_spaced_letters(fix_rtl_line(l)) for l in lines]
-            pages.append("\n".join(fixed))
+
+    for page in doc:
+        page_lines = []
+        # Collect spans by line (group by approximate y)
+        blocks = page.get_text("dict")["blocks"]
+        y_spans = {}  # y_bucket -> list of (x, text)
+        for b in blocks:
+            if "lines" not in b:
+                continue
+            for line in b["lines"]:
+                y = round(line["bbox"][1] / 5) * 5  # bucket by 5pt
+                for span in line["spans"]:
+                    fname = span["font"]
+                    txt = span["text"]
+                    # If this is a script font with no unicode content, OCR it
+                    if fname in _SCRIPT_FONTS or (not txt.strip() and any(sf in fname for sf in _SCRIPT_FONTS)):
+                        # Expand bbox slightly for context
+                        r = _fitz.Rect(span["bbox"]).inflate(5)
+                        # Expand to full line height
+                        r = _fitz.Rect(0, r.y0 - 10, page.rect.width, r.y1 + 10)
+                        ocr_text = _ocr_page_region(page, r)
+                        txt = ocr_text if ocr_text else txt
+                    if y not in y_spans:
+                        y_spans[y] = []
+                    y_spans[y].append((span["bbox"][0], txt))
+
+        # Reconstruct lines sorted by y, then x (RTL: reverse x)
+        for y in sorted(y_spans.keys()):
+            spans = sorted(y_spans[y], key=lambda s: s[0], reverse=True)
+            line_text = " ".join(s[1] for s in spans if s[1].strip())
+            if line_text.strip():
+                page_lines.append(line_text)
+
+        raw = "\n".join(page_lines)
+        lines = raw.split("\n")
+        fixed = [rejoin_spaced_letters(fix_rtl_line(l)) for l in lines]
+        pages.append("\n".join(fixed))
+
     full = "\n\n".join(pages)
     full = re.sub(r"\n\d{1,3}\n", "\n", full)   # strip page numbers
     full = re.sub(r"[■●•◆▪]", "", full)          # strip bullets
@@ -305,7 +340,52 @@ def extract_text_from_pdf(path: str) -> str:
     full = strip_nikud(full)
     return full.strip()
 
-def extract_raw_head(path: str) -> str:
+
+def extract_text_from_docx(path: str) -> str:
+    """Extract text from a .docx file, including tables, in reading order."""
+    from docx import Document as _Document
+    from docx.oxml.ns import qn as _qn
+
+    doc = _Document(path)
+
+    # Build an ordered list of (element, text) by iterating the document body
+    # in XML order — paragraphs and tables are siblings in body.xml
+    body = doc.element.body
+    chunks = []
+
+    for child in body:
+        tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+
+        if tag == 'p':
+            # Paragraph
+            text = ''.join(node.text or '' for node in child.iter()
+                           if node.tag.endswith('}t') or node.tag == 't')
+            text = text.strip()
+            if text:
+                chunks.append(text)
+
+        elif tag == 'tbl':
+            # Table — extract cells left-to-right, top-to-bottom
+            seen = set()
+            for row in child.findall('.//' + '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
+                row_texts = []
+                for cell in row.findall('.//' + '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc'):
+                    cell_text = ''.join(
+                        node.text or '' for node in cell.iter()
+                        if node.tag.endswith('}t') or node.tag == 't'
+                    ).strip()
+                    if cell_text and cell_text not in seen:
+                        seen.add(cell_text)
+                        row_texts.append(cell_text)
+                if row_texts:
+                    chunks.append('\n'.join(row_texts))
+
+    full = '\n'.join(chunks)
+    full = re.sub(r'\n{3,}', '\n\n', full)
+    full = strip_nikud(full)
+    return full.strip()
+
+
     """Extract first-page text WITHOUT rejoin, for parasha detection."""
     with pdfplumber.open(path) as pdf:
         raw = pdf.pages[0].extract_text() or ""
@@ -606,12 +686,19 @@ def upload():
     if "pdf" not in request.files:
         return jsonify({"error": "no file"}), 400
     f = request.files["pdf"]
-    tmp = "/tmp/upload.pdf"
+    fname = f.filename or ""
+    is_docx = fname.lower().endswith(".docx")
+    tmp = "/tmp/upload.docx" if is_docx else "/tmp/upload.pdf"
     f.save(tmp)
 
     try:
-        text = extract_text_from_pdf(tmp)
-        raw_head = extract_raw_head(tmp)
+        if is_docx:
+            text = extract_text_from_docx(tmp)
+            # For docx, use first non-empty paragraph as title hint
+            raw_head = text[:500]
+        else:
+            text = extract_text_from_pdf(tmp)
+            raw_head = extract_raw_head(tmp)
         title = detect_title(text, raw_head)
         segments = split_segments(text)
 
@@ -781,20 +868,6 @@ def set_issue():
                 (data["issue_id"], user["id"]))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
-
-@app.route("/api/activate_issue_all", methods=["POST"])
-def activate_issue_all():
-    """Set this issue as active for ALL users, resetting their position."""
-    data = request.json
-    issue_id = data.get("issue_id")
-    if not issue_id:
-        return jsonify({"ok": False})
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE users SET issue_id=%s, segment_pos=0, chunk_pos=0",
-                (issue_id,))
-    count = cur.rowcount
-    conn.commit(); cur.close(); conn.close()
-    return jsonify({"ok": True, "updated": count})
 
 @app.route("/api/issues")
 def issues():
@@ -1034,9 +1107,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 #user-name-lbl{flex:1;font-weight:700;color:var(--text)}
 
 #hdr{display:flex;flex-direction:column;gap:3px}
-#issue-lbl{font-size:11px;color:var(--accent);font-weight:700;unicode-bidi:plaintext;
+#issue-lbl{font-size:11px;color:var(--accent);font-weight:700;
   letter-spacing:.08em;text-transform:uppercase}
-#seg-lbl{font-size:21px;font-weight:900;line-height:1.2;unicode-bidi:plaintext}
+#seg-lbl{font-size:21px;font-weight:900;line-height:1.2}
 #pos-lbl{font-size:12px;color:var(--muted)}
 
 #pbar{height:3px;background:var(--border);border-radius:99px;overflow:hidden;flex-shrink:0}
@@ -1044,7 +1117,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 
 #ta{flex:1;background:var(--surface);border-radius:var(--r);padding:20px;
   overflow-y:auto;border:1px solid var(--border);-webkit-overflow-scrolling:touch}
-#body{font-size:19px;line-height:1.95;white-space:pre-wrap;unicode-bidi:plaintext}
+#body{font-size:19px;line-height:1.95;white-space:pre-wrap}
 
 #pi{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--accent);
   opacity:0;transition:opacity .3s;height:18px;flex-shrink:0}
@@ -1127,8 +1200,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 <div id="blind">
   <div id="blind-top">
     <div id="blind-user-name" style="font-size:13px;color:#2d5f3f;font-weight:700;text-align:center;min-height:18px"></div>
-    <div id="blind-title" dir="auto">ידיעון בארות יצחק</div>
-    <div id="blind-seg" dir="auto">טוען...</div>
+    <div id="blind-title">ידיעון בארות יצחק</div>
+    <div id="blind-seg">טוען...</div>
     <div id="blind-pi">
       <div class="bars"><span></span><span></span><span></span></div>
       <span style="font-size:13px;color:#2d5f3f">מקריא...</span>
@@ -1155,13 +1228,13 @@ html,body{height:100%;background:var(--bg);color:var(--text);
     <button onclick="startLoginFlow(function(){sessionStorage.removeItem('greeted');load();})" style="font-size:12px;padding:4px 12px;background:transparent;border:1px solid var(--border,#ccc);border-radius:6px;cursor:pointer">התחבר</button>
   </div>
   <div id="hdr">
-    <div id="issue-lbl" dir="auto">ידיעון</div>
-    <div id="seg-lbl" dir="auto">טוען...</div>
+    <div id="issue-lbl">ידיעון</div>
+    <div id="seg-lbl">טוען...</div>
     <div id="pos-lbl"></div>
   </div>
   <div id="pbar"><div id="pfill"></div></div>
   <div id="detail-phrase"></div>
-  <div id="ta"><div id="body" dir="auto"></div></div>
+  <div id="ta"><div id="body"></div></div>
   <div id="pi">
     <div class="bars"><span></span><span></span><span></span></div>
     <span>מקריא...</span>
@@ -1429,13 +1502,7 @@ function render(){
   document.getElementById('seg-lbl').textContent=seg.title;
   document.getElementById('pos-lbl').textContent=
     '\u05e7\u05d8\u05e2 '+(S.current_position+1)+' \u05de\u05ea\u05d5\u05da '+S.total;
-  // Wrap each line in span dir=auto — fixes English lines displaying RTL
-  var bodyEl=document.getElementById('body');
-  var bodyLines=(seg.body||'').split(String.fromCharCode(10));
-  bodyEl.innerHTML=bodyLines.map(function(line){
-    var esc=line.replace(/&/g,'&amp;').replace(/[<]/g,'&lt;').replace(/[>]/g,'&gt;');
-    return '<span dir="auto" style="display:block">'+esc+'</span>';
-  }).join('');
+  document.getElementById('body').textContent=seg.body;
   document.getElementById('pfill').style.width=
     ((S.current_position+1)/S.total*100)+'%';
   document.getElementById('ta').scrollTop=0;
@@ -1617,22 +1684,13 @@ function normalizeForSpeech(text){
       if(totalLen>=4) return letters;
       return expandLetterNames(letters);
     });
-  // 2. Geresh after Hebrew letter in any position:
-  //    ד' / ט' / ה'תשפ"ו — look up in ABBR_DICT first, else letter name or strip
-  //    Pattern: Hebrew letter + geresh, where geresh is NOT followed by another Hebrew letter
-  //    (that case is gershayim-style and handled above, or is a foreign-sound like ג'ירפה)
-  text=text.replace(/([\u05d0-\u05ea])['\u05f3](?![\u05d0-\u05ea])/g,
+  // 2. Geresh after single letter: ד' → look up in ABBR_DICT first, else letter name
+  text=text.replace(/([\u05d0-\u05ea])['\u05f3](?=\s|$)/g,
     function(m,ch){
       var key=ch+"'";
       if(ABBR_DICT[key]) return ABBR_DICT[key];
-      // Letters that commonly represent foreign sounds (keep as letter name):
-      // ג', ז', צ', ת', ד', ט' — but only before space or punctuation, not mid-word
       return LETTER_NAMES[ch]||ch;
     });
-  // 2b. Geresh as part of ה'שנה-style (apostrophe between Hebrew letters like ה'תשפ)
-  //     These slip through — strip any remaining geresh/apostrophe between Hebrew letters
-  text=text.replace(/([\u05d0-\u05ea])['\u05f3]([\u05d0-\u05ea])/g,
-    function(m,a,b){ return a+b; });
   // 3. Single isolated Hebrew letter → letter name
   text=text.replace(/(?<![^\u05d0-\u05ea\s])(^|\s)([\u05d0-\u05ea])(\s|$)/g,
     function(m,pre,ch,post){ return pre+(LETTER_NAMES[ch]||ch)+post; });
@@ -2752,7 +2810,7 @@ h1{font-size:32px;font-weight:900;margin-bottom:3px}
       <div class="ht">גרור לכאן קובץ PDF</div>
       <div class="sb2">או לחץ לבחירה</div>
     </div>
-    <input type="file" id="fi" accept=".pdf" onchange="pick(this.files[0])">
+    <input type="file" id="fi" accept=".pdf,.docx" onchange="pick(this.files[0])">
     <div id="fn"></div>
     <button class="ubtn" id="ub" onclick="doUpload()">העלה ועבד</button>
     <div id="prog"><div id="pfill"></div></div>
@@ -2773,7 +2831,7 @@ function dropFile(e){
   e.preventDefault();
   document.getElementById('dz').classList.remove('over');
   var f=e.dataTransfer.files[0];
-  if(f&&f.name.endsWith('.pdf'))pick(f);
+  if(f&&(f.name.endsWith('.pdf')||f.name.endsWith('.docx')))pick(f);
 }
 function pick(f){
   if(!f)return; file=f;
@@ -2907,11 +2965,8 @@ async function renameSeg(segId,issueId){
     body:JSON.stringify({segment_id:segId,title:val})});
 }
 async function activateIssue(id){
-  if(!confirm('\u05dc\u05d4\u05e4\u05e2\u05d9\u05dc \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05d4 \u05dc\u05db\u05dc \u05d4\u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd \u05d5\u05dc\u05d0\u05e4\u05e1 \u05d0\u05ea \u05d4\u05e4\u05e8\u05e7 \u05e9\u05dc\u05d4\u05dd \u05dc\u05e4\u05e8\u05e7 1?'))return;
-  var r=await fetch('/api/activate_issue_all',{method:'POST',
+  await fetch('/api/set_issue',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({issue_id:id})});
-  var d=await r.json();
-  if(d.ok) alert('\u05e2\u05d5\u05d3\u05db\u05df '+d.updated+' \u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd');
   loadIssues();
 }
 async function deleteIssue(id){
