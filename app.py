@@ -342,43 +342,57 @@ def extract_text_from_pdf(path: str) -> str:
 
 
 def extract_text_from_docx(path: str) -> str:
-    """Extract text from a .docx file, including tables, in reading order."""
+    """Extract text from a .docx file, preserving article structure with blank lines."""
     from docx import Document as _Document
-    from docx.oxml.ns import qn as _qn
 
     doc = _Document(path)
-
-    # Build an ordered list of (element, text) by iterating the document body
-    # in XML order — paragraphs and tables are siblings in body.xml
     body = doc.element.body
+    NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
     chunks = []
+
+    def para_text(p_elem):
+        return ''.join(n.text or '' for n in p_elem.iter()
+                       if n.tag.endswith('}t') or n.tag == 't')
+
+    def para_is_bold(p_elem):
+        runs = p_elem.findall('.//{%s}r' % NS)
+        if not runs: return False
+        bold_runs = sum(1 for r in runs if r.find('.//{%s}b' % NS) is not None)
+        return bold_runs > len(runs) // 2
 
     for child in body:
         tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
 
         if tag == 'p':
-            # Paragraph
-            text = ''.join(node.text or '' for node in child.iter()
-                           if node.tag.endswith('}t') or node.tag == 't')
-            text = text.strip()
-            if text:
+            text = para_text(child).strip()
+            if not text:
+                continue
+            bold = para_is_bold(child)
+            short = len(text) <= 60
+            # Bold + short = article heading → wrap with blank lines
+            if bold and short:
+                chunks.append('')
+                chunks.append(text)
+                chunks.append('')
+            else:
                 chunks.append(text)
 
         elif tag == 'tbl':
-            # Table — extract cells left-to-right, top-to-bottom
             seen = set()
-            for row in child.findall('.//' + '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr'):
+            for row in child.findall('.//{%s}tr' % NS):
                 row_texts = []
-                for cell in row.findall('.//' + '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc'):
+                for cell in row.findall('.//{%s}tc' % NS):
                     cell_text = ''.join(
-                        node.text or '' for node in cell.iter()
-                        if node.tag.endswith('}t') or node.tag == 't'
+                        n.text or '' for n in cell.iter()
+                        if n.tag.endswith('}t') or n.tag == 't'
                     ).strip()
                     if cell_text and cell_text not in seen:
                         seen.add(cell_text)
                         row_texts.append(cell_text)
                 if row_texts:
+                    chunks.append('')
                     chunks.append('\n'.join(row_texts))
+                    chunks.append('')
 
     full = '\n'.join(chunks)
     full = re.sub(r'\n{3,}', '\n\n', full)
@@ -386,7 +400,7 @@ def extract_text_from_docx(path: str) -> str:
     return full.strip()
 
 
-    """Extract first-page text WITHOUT rejoin, for parasha detection."""
+def extract_raw_head(path: str) -> str:
     with pdfplumber.open(path) as pdf:
         raw = pdf.pages[0].extract_text() or ""
     lines = raw.split("\n")
@@ -1843,7 +1857,7 @@ function _nextChunk(){
     setTimeout(function(){ if(!chunkStopped&&playing) _nextChunk(); }, 1000);
     return;
   }
-  // Article break marker — 1 second pause between articles
+  // Article break marker — 2 second pause between articles
   if(text==='__ARTICLE_BREAK__'){
     // Update currentArticle counter
     for(var ai=0;ai<articleBreaks.length;ai++){
@@ -1851,7 +1865,7 @@ function _nextChunk(){
     }
     savePos(S.current_position, chunkIdx);
     chunkIdx++;
-    setTimeout(function(){ if(!chunkStopped&&playing) _nextChunk(); }, 1000);
+    setTimeout(function(){ if(!chunkStopped&&playing) _nextChunk(); }, 2000);
     return;
   }
   showPhrase(text);
