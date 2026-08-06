@@ -360,16 +360,25 @@ def extract_text_from_docx(path: str) -> str:
         bold_runs = sum(1 for r in runs if r.find('.//{%s}b' % NS) is not None)
         return bold_runs > len(runs) // 2
 
+    def clean(text):
+        # Remove geresh and gershayim
+        text = re.sub(r"['\u05f3\"\u05f4״]", '', text)
+        # Replace ■ with pause marker
+        text = re.sub(r'■', ' __ARTICLE_END__ ', text)
+        # Collapse spaced Hebrew letters (פ ר ש ה → פרשה) — only isolated single letters
+        text = re.sub(r'(?<![א-ת])([א-ת]) (?=[א-ת] )', r'\1', text)
+        text = re.sub(r'(?<![א-ת])([א-ת]) (?=[א-ת](?:\s|$))', r'\1', text)
+        return text.strip()
+
     for child in body:
         tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
 
         if tag == 'p':
-            text = para_text(child).strip()
+            text = clean(para_text(child))
             if not text:
                 continue
             bold = para_is_bold(child)
             short = len(text) <= 60
-            # Bold + short = article heading → wrap with blank lines
             if bold and short:
                 chunks.append('')
                 chunks.append(text)
@@ -382,16 +391,17 @@ def extract_text_from_docx(path: str) -> str:
             for row in child.findall('.//{%s}tr' % NS):
                 row_texts = []
                 for cell in row.findall('.//{%s}tc' % NS):
-                    cell_text = ''.join(
+                    cell_text = clean(''.join(
                         n.text or '' for n in cell.iter()
                         if n.tag.endswith('}t') or n.tag == 't'
-                    ).strip()
+                    ))
                     if cell_text and cell_text not in seen:
                         seen.add(cell_text)
                         row_texts.append(cell_text)
                 if row_texts:
                     chunks.append('')
-                    chunks.append('\n'.join(row_texts))
+                    # Each cell on its own line
+                    chunks.extend(row_texts)
                     chunks.append('')
 
     full = '\n'.join(chunks)
@@ -446,8 +456,9 @@ def _normalize_parasha(raw: str) -> str:
     return mapping.get(compact, re.sub(r"\s+", " ", raw).strip())
 
 def detect_title(text: str, raw_head: str = "") -> str:
-    head = strip_nikud(text[:800])
+    head = strip_nikud(text[:1500])  # wider search window for docx
     search_head = strip_nikud(raw_head) if raw_head else head
+    # Issue number — search entire head (docx text boxes may appear out of order)
     m3 = re.search(r"גיליון\s+(\d+)", head)
     issue_num = m3.group(1) if m3 else None
     m = _PARASHA_SPACED_RE.search(search_head)
@@ -1344,58 +1355,86 @@ function startLoginFlow(onDone){
   setTimeout(function(){
     sayHebrew('\u05de\u05d9 \u05d0\u05ea\u05d4?', function(){
       dictListenOnce(function(heard){
-        // Strip nikud, taamim, punctuation, extra spaces — same as normH
         var name=(heard||'')
-          .replace(/[\u0591-\u05c7]/g,'')   // nikud/taamim
+          .replace(/[\u0591-\u05c7]/g,'')
           .replace(/[.,!?״׳"'\-]/g,'')
           .replace(/\s+/g,' ')
           .trim();
         if(!name){
-          sayHebrew('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
-          setTimeout(function(){ startLoginFlow(onDone); }, 2500);
+          // Nothing heard — prompt and retry
+          sayHebrew('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.', function(){
+            setTimeout(function(){ startLoginFlow(onDone); }, 500);
+          });
           return;
         }
-        // Check if user exists
         fetch('/api/login_check',{method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({name:name})
         }).then(function(r){ return r.json(); }).then(function(d){
           if(d.exists){
-            // Existing user — ask to confirm
             sayHebrew('\u05d4\u05de\u05e9\u05ea\u05de\u05e9 '+name+' \u05db\u05d1\u05e8 \u05e7\u05d9\u05d9\u05dd. \u05d4\u05d0\u05dd \u05d6\u05d4 \u05d0\u05ea\u05d4?', function(){
               dictListenOnce(function(ans){
-                var a=normH(ans||'');
-                if(/\u05db\u05df|\u05d1\u05e1\u05d3\u05e8|\u05e0\u05db\u05d5\u05df|\u05d0\u05d5\u05e7\u05d9|\u05d0\u05e0\u05d9/.test(a) && !/\u05dc\u05d0/.test(a)){
-                  // Yes — log in
-                  doLogin(name, onDone);
-                } else if(/\u05dc\u05d0/.test(a)){
-                  // No — ask for different name
-                  sayHebrew('\u05d0\u05d6 \u05d1\u05d7\u05e8 \u05d1\u05d1\u05e7\u05e9\u05d4 \u05e9\u05dd \u05d0\u05d7\u05e8.');
-                  setTimeout(function(){ startLoginFlow(onDone); }, 2500);
-                } else {
-                  // Unclear
-                  setTimeout(function(){ startLoginFlow(onDone); }, 1000);
+                if(!ans){
+                  // Nothing heard — retry confirmation
+                  sayHebrew('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9. \u05d4\u05d0\u05dd \u05d6\u05d4 \u05d0\u05ea\u05d4, '+name+'?', function(){
+                    dictListenOnce(function(ans2){
+                      ans=ans2||'';
+                      _handleLoginConfirm(ans, name, true, onDone);
+                    });
+                  });
+                  return;
                 }
+                _handleLoginConfirm(ans, name, true, onDone);
               });
             });
           } else {
-            // New user — confirm name before creating
             sayHebrew('\u05e9\u05dd \u05d7\u05d3\u05e9: '+name+'. \u05d4\u05d0\u05dd \u05e0\u05db\u05d5\u05df?', function(){
               dictListenOnce(function(ans){
-                var a=normH(ans||'');
-                if(/\u05db\u05df|\u05d1\u05e1\u05d3\u05e8|\u05e0\u05db\u05d5\u05df|\u05d0\u05d5\u05e7\u05d9/.test(a) && !/\u05dc\u05d0/.test(a)){
-                  doLogin(name, onDone);
-                } else {
-                  sayHebrew('\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
-                  setTimeout(function(){ startLoginFlow(onDone); }, 2000);
+                if(!ans){
+                  sayHebrew('\u05dc\u05d0 \u05e9\u05de\u05e2\u05ea\u05d9. \u05d4\u05d0\u05dd \u05d4\u05e9\u05dd '+name+' \u05e0\u05db\u05d5\u05df?', function(){
+                    dictListenOnce(function(ans2){
+                      ans=ans2||'';
+                      _handleLoginConfirm(ans, name, false, onDone);
+                    });
+                  });
+                  return;
                 }
+                _handleLoginConfirm(ans, name, false, onDone);
               });
             });
           }
+        }).catch(function(){
+          sayHebrew('\u05e9\u05d2\u05d9\u05d0\u05ea \u05ea\u05e7\u05e9\u05d5\u05e8\u05ea. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.', function(){
+            setTimeout(function(){ startLoginFlow(onDone); }, 500);
+          });
         });
       });
     });
   }, 300);
+}
+
+function _handleLoginConfirm(ans, name, exists, onDone){
+  var a=normH(ans||'');
+  var yes=/כן|בסדר|נכון|אוקי|אני|כ$/.test(a) && !/לא/.test(a);
+  var no=/לא/.test(a);
+  if(yes){
+    doLogin(name, onDone);
+  } else if(no || exists){
+    if(no && exists){
+      sayHebrew('\u05d0\u05d6 \u05d1\u05d7\u05e8 \u05d1\u05d1\u05e7\u05e9\u05d4 \u05e9\u05dd \u05d0\u05d7\u05e8.', function(){
+        setTimeout(function(){ startLoginFlow(onDone); }, 500);
+      });
+    } else if(no){
+      sayHebrew('\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.', function(){
+        setTimeout(function(){ startLoginFlow(onDone); }, 500);
+      });
+    } else {
+      // Unclear answer
+      setTimeout(function(){ startLoginFlow(onDone); }, 1000);
+    }
+  } else {
+    setTimeout(function(){ startLoginFlow(onDone); }, 1000);
+  }
 }
 
 function doLogin(name, onDone){
@@ -1855,6 +1894,13 @@ function _nextChunk(){
     savePos(S.current_position, chunkIdx);
     chunkIdx++;
     setTimeout(function(){ if(!chunkStopped&&playing) _nextChunk(); }, 1000);
+    return;
+  }
+  // Article end marker (■) — 2 second pause, nothing displayed
+  if(text==='__ARTICLE_END__'){
+    savePos(S.current_position, chunkIdx);
+    chunkIdx++;
+    setTimeout(function(){ if(!chunkStopped&&playing) _nextChunk(); }, 2000);
     return;
   }
   // Article break marker — 2 second pause between articles
