@@ -342,16 +342,15 @@ def extract_text_from_pdf(path: str) -> str:
 
 
 def extract_text_from_docx(path: str) -> str:
-    """Extract text from a .docx file, preserving article structure with blank lines."""
+    """Extract text from a .docx file, preserving article structure, without duplicating text boxes."""
     from docx import Document as _Document
 
     doc = _Document(path)
     body = doc.element.body
     NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-    chunks = []
 
-    def para_text(p_elem):
-        return ''.join(n.text or '' for n in p_elem.iter()
+    def elem_text(elem):
+        return ''.join(n.text or '' for n in elem.iter()
                        if n.tag.endswith('}t') or n.tag == 't')
 
     def para_is_bold(p_elem):
@@ -361,50 +360,71 @@ def extract_text_from_docx(path: str) -> str:
         return bold_runs > len(runs) // 2
 
     def clean(text):
-        # Remove geresh and gershayim
-        text = re.sub(r"['\u05f3\"\u05f4״]", '', text)
-        # Replace ■ with pause marker
+        text = re.sub(r"['\u05f3\"\u05f4\u05f4\u05f4\u05f4]", '', text)  # geresh
+        text = text.replace('\u05f4', '').replace('\u05f3', '')
+        text = text.replace('"', '').replace("'", '')
+        text = re.sub(r'\u05f4|\u05f3|[״\'"]', '', text)  # all geresh variants
         text = re.sub(r'■', ' __ARTICLE_END__ ', text)
-        # Collapse spaced Hebrew letters (פ ר ש ה → פרשה) — only isolated single letters
-        text = re.sub(r'(?<![א-ת])([א-ת]) (?=[א-ת] )', r'\1', text)
-        text = re.sub(r'(?<![א-ת])([א-ת]) (?=[א-ת](?:\s|$))', r'\1', text)
+        # Collapse spaced Hebrew letters: ו א ת ח נ ן → ואתחנן
+        for _ in range(10):
+            new = re.sub(r'(?<!\S)([א-ת]) ([א-ת])(?!\S)', r'\1\2', text)
+            if new == text: break
+            text = new
         return text.strip()
 
+    # Collect all text-box content first (to detect duplicates)
+    # Word stores txbx text in <w:txbxContent> AND repeats it as inline fallback
+    seen_txbx_keys = set()
+    txbx_chunks = []
+    for elem in body.iter():
+        if 'txbxContent' in (elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag):
+            txt = clean(elem_text(elem))
+            key = txt[:100]
+            if txt and key not in seen_txbx_keys:
+                seen_txbx_keys.add(key)
+                txbx_chunks.append(txt)
+
+    chunks = []
     for child in body:
         tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
 
         if tag == 'p':
-            text = clean(para_text(child))
-            if not text:
+            # Skip paragraphs that are inside text boxes (already collected)
+            is_txbx = any('txbxContent' in (a.tag.split('}')[-1] if '}' in a.tag else a.tag)
+                          for a in child.iter())
+            if is_txbx:
+                continue
+            txt = clean(elem_text(child))
+            if not txt:
+                continue
+            # Skip if this paragraph's text matches a txbx we already have
+            if txt[:100] in seen_txbx_keys:
                 continue
             bold = para_is_bold(child)
-            short = len(text) <= 60
+            short = len(txt) <= 60
             if bold and short:
                 chunks.append('')
-                chunks.append(text)
+                chunks.append(txt)
                 chunks.append('')
             else:
-                chunks.append(text)
+                chunks.append(txt)
 
         elif tag == 'tbl':
-            seen = set()
+            seen_cells = set()
             for row in child.findall('.//{%s}tr' % NS):
-                row_texts = []
                 for cell in row.findall('.//{%s}tc' % NS):
-                    cell_text = clean(''.join(
-                        n.text or '' for n in cell.iter()
-                        if n.tag.endswith('}t') or n.tag == 't'
-                    ))
-                    if cell_text and cell_text not in seen:
-                        seen.add(cell_text)
-                        row_texts.append(cell_text)
-                if row_texts:
-                    chunks.append('')
-                    # Each cell on its own line
-                    chunks.extend(row_texts)
-                    chunks.append('')
+                    # Each paragraph in cell on its own line
+                    cell_paras = []
+                    for p in cell.findall('.//{%s}p' % NS):
+                        pt = clean(elem_text(p))
+                        if pt and pt not in seen_cells:
+                            seen_cells.add(pt)
+                            cell_paras.append(pt)
+                    if cell_paras:
+                        chunks.extend(cell_paras)
+            chunks.append('')
 
-    full = '\n'.join(chunks)
+    full = '\n'.join(txbx_chunks + [''] + chunks)
     full = re.sub(r'\n{3,}', '\n\n', full)
     full = strip_nikud(full)
     return full.strip()
@@ -1610,6 +1630,18 @@ var COMMA_MIN=15;
 var COMMA_MAX=25;
 
 function splitChunks(text){
+  // Extract __ARTICLE_END__ markers before splitting, preserve as standalone chunks
+  var parts = text.split('__ARTICLE_END__');
+  var result = [];
+  parts.forEach(function(part, idx){
+    var sub = _splitChunksInner(part.trim());
+    result = result.concat(sub);
+    if(idx < parts.length - 1) result.push('__ARTICLE_END__');
+  });
+  return result.filter(function(s){return s.length>0;});
+}
+
+function _splitChunksInner(text){
   // First split into sentences at . ! ?
   // Then within long sentences, break at comma near word 15-25, else at word 20
   var sentences=[];
