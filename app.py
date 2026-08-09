@@ -911,6 +911,19 @@ def set_issue():
     conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
+@app.route("/api/activate_issue_all", methods=["POST"])
+def activate_issue_all():
+    """Set issue as active for ALL users, resetting their position to 0."""
+    data = request.json
+    issue_id = data.get("issue_id")
+    if not issue_id:
+        return jsonify({"ok": False})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE users SET issue_id=%s, segment_pos=0, chunk_pos=0", (issue_id,))
+    count = cur.rowcount
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"ok": True, "updated": count})
+
 @app.route("/api/issues")
 def issues():
     conn = get_db(); cur = conn.cursor()
@@ -1572,7 +1585,14 @@ function render(){
   document.getElementById('seg-lbl').textContent=seg.title;
   document.getElementById('pos-lbl').textContent=
     '\u05e7\u05d8\u05e2 '+(S.current_position+1)+' \u05de\u05ea\u05d5\u05da '+S.total;
-  document.getElementById('body').textContent=seg.body;
+  // Display body — strip internal markers, wrap each line in dir=auto span
+  var bodyEl=document.getElementById('body');
+  var rawBody=(seg.body||'').replace(/__ARTICLE_END__/g,'').replace(/ {2,}/g,' ');
+  var bodyLines=rawBody.split(String.fromCharCode(10));
+  bodyEl.innerHTML=bodyLines.map(function(line){
+    var esc=line.replace(/&/g,'&amp;').replace(/[<]/g,'&lt;').replace(/[>]/g,'&gt;');
+    return '<span dir="auto" style="display:block">'+esc+'</span>';
+  }).join('');
   document.getElementById('pfill').style.width=
     ((S.current_position+1)/S.total*100)+'%';
   document.getElementById('ta').scrollTop=0;
