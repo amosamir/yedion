@@ -414,14 +414,11 @@ def extract_text_from_docx(path: str) -> str:
             for row in child.findall('.//{%s}tr' % NS):
                 for cell in row.findall('.//{%s}tc' % NS):
                     # Each paragraph in cell on its own line
-                    cell_paras = []
                     for p in cell.findall('.//{%s}p' % NS):
                         pt = clean(elem_text(p))
                         if pt and pt not in seen_cells:
                             seen_cells.add(pt)
-                            cell_paras.append(pt)
-                    if cell_paras:
-                        chunks.extend(cell_paras)
+                            chunks.append(pt)
             chunks.append('')
 
     full = '\n'.join(txbx_chunks + [''] + chunks)
@@ -3057,8 +3054,11 @@ async function renameSeg(segId,issueId){
     body:JSON.stringify({segment_id:segId,title:val})});
 }
 async function activateIssue(id){
-  await fetch('/api/set_issue',{method:'POST',
+  if(!confirm('\u05dc\u05d4\u05e4\u05e2\u05d9\u05dc \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05d6\u05d4 \u05dc\u05db\u05dc \u05d4\u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd \u05d5\u05dc\u05d0\u05e4\u05e1 \u05d0\u05ea \u05d4\u05e4\u05e8\u05e7 \u05e9\u05dc\u05d4\u05dd \u05dc\u05e4\u05e8\u05e7 1?'))return;
+  var r=await fetch('/api/activate_issue_all',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({issue_id:id})});
+  var d=await r.json();
+  if(d.ok) alert('\u05e2\u05d5\u05d3\u05db\u05df '+d.updated+' \u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd');
   loadIssues();
 }
 async function deleteIssue(id){
