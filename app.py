@@ -1322,6 +1322,7 @@ var S=null,synth=window.speechSynthesis,utt=null,playing=false,rate=1,heVoice=nu
 var currentScreen='blind';
 var chunks=[],chunkIdx=0,chunkStopped=false;
 var articleBreaks=[],currentArticle=0;
+var needLogin=false;
 
 // ── Voices ──────────────────────────────────────────────────────
 function initV(){
@@ -1510,16 +1511,15 @@ async function load(){
   document.getElementById('ls').style.display='none';
 
   if(d.need_login){
-    // Not logged in — start login flow
     document.getElementById('blind').style.display='flex';
-    document.getElementById('blind-seg').textContent='\u05d1\u05d1\u05e7\u05e9\u05d4 \u05d4\u05d6\u05d3\u05d4\u05d4...';
-    // Wait for first touch to unlock TTS
+    document.getElementById('blind-seg').textContent='\u05dc\u05d7\u05e5 \u05d3\u05d1\u05e8 \u05d0\u05dc\u05d9 \u05dc\u05d4\u05d6\u05d3\u05d4\u05d5\u05ea';
+    needLogin=true;
+    // On first touch/click: unlock TTS and immediately start login
     function startAfterTouch(){
       document.removeEventListener('touchstart',startAfterTouch);
       document.removeEventListener('mousedown',startAfterTouch);
-      startLoginFlow(function(){
-        load(); // reload after login
-      });
+      needLogin=false;
+      startLoginFlow(function(){ load(); });
     }
     document.addEventListener('touchstart',startAfterTouch,{once:true});
     document.addEventListener('mousedown',startAfterTouch,{once:true});
@@ -2126,7 +2126,15 @@ function vcMsg(txt,bright){
 
 function startListen(){
   unlockTTS(); // must be first — unlocks iOS TTS within this user gesture
-  if(greetingActive) return; // don't interrupt greeting
+  if(greetingActive) return;
+  // If not logged in yet, start login flow (button press = touch = TTS unlock)
+  if(needLogin){
+    needLogin=false;
+    document.removeEventListener('touchstart', arguments.callee);
+    document.removeEventListener('mousedown', arguments.callee);
+    startLoginFlow(function(){ load(); });
+    return;
+  }
   if(!S){
     // No active issue — go straight to issue picker
     sayHebrew('\u05d0\u05d9\u05df \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05e4\u05e2\u05d9\u05dc. \u05d0\u05d9\u05d6\u05d4 \u05d9\u05d3\u05d9\u05e2\u05d5\u05df \u05dc\u05d4\u05e4\u05e2\u05d9\u05dc?', function(){
