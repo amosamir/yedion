@@ -1513,16 +1513,8 @@ async function load(){
   if(d.need_login){
     document.getElementById('blind').style.display='flex';
     document.getElementById('blind-seg').textContent='\u05dc\u05d7\u05e5 \u05d3\u05d1\u05e8 \u05d0\u05dc\u05d9 \u05dc\u05d4\u05d6\u05d3\u05d4\u05d5\u05ea';
+    currentUser=null;
     needLogin=true;
-    // On first touch/click: unlock TTS and immediately start login
-    function startAfterTouch(){
-      document.removeEventListener('touchstart',startAfterTouch);
-      document.removeEventListener('mousedown',startAfterTouch);
-      needLogin=false;
-      startLoginFlow(function(){ load(); });
-    }
-    document.addEventListener('touchstart',startAfterTouch,{once:true});
-    document.addEventListener('mousedown',startAfterTouch,{once:true});
     return;
   }
 
@@ -2127,11 +2119,9 @@ function vcMsg(txt,bright){
 function startListen(){
   unlockTTS(); // must be first — unlocks iOS TTS within this user gesture
   if(greetingActive) return;
-  // If not logged in yet, start login flow (button press = touch = TTS unlock)
-  if(needLogin){
+  // If not logged in, always go to login — regardless of S or needLogin state
+  if(!currentUser){
     needLogin=false;
-    document.removeEventListener('touchstart', arguments.callee);
-    document.removeEventListener('mousedown', arguments.callee);
     startLoginFlow(function(){ load(); });
     return;
   }
