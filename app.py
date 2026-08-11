@@ -1764,6 +1764,26 @@ function normalizeForSpeech(text){
   // are already normalized server-side before storage.
   // This function handles only the parts that depend on ABBR_DICT (loaded at runtime).
 
+  // 0. Replace common geresh words that iOS Carmit can't pronounce correctly
+  // Key=word with geresh (u05f3), Value=pronunciation without geresh
+  var GERESH_WORDS={
+    '\u05e4\u05d9\u05d2\u05f3\u05de\u05d4':'\u05e4\u05d9\u05d6\u05de\u05d4',
+    '\u05e4\u05d9\u05d2\u05f3\u05de\u05d5\u05ea':'\u05e4\u05d9\u05d6\u05de\u05d5\u05ea',
+    '\u05d1\u05e0\u05d2\u05f3\u05d5':'\u05d1\u05e0\u05d2\u05d5',
+    '\u05d2\u05f3\u05d9\u05e8\u05e3':'\u05d2\u05d9\u05e8\u05e3',
+    '\u05d2\u05f3\u05d9\u05e8\u05e4\u05d4':'\u05d2\u05d9\u05e8\u05e4\u05d4',
+    '\u05d2\u05f3\u05d9\u05de\u05d9':'\u05d2\u05d9\u05de\u05d9',
+    '\u05d2\u05f3\u05d9\u05e0\u05e1':'\u05d2\u05d9\u05e0\u05e1',
+    '\u05d2\u05f3\u05d5\u05e7\u05e8':'\u05d2\u05d5\u05e7\u05e8',
+    '\u05d2\u05f3\u05d5\u05e0\u05d2\u05dc':'\u05d2\u05d5\u05e0\u05d2\u05dc'
+  };
+  // Match with both geresh variants (u05f3 and ASCII apostrophe)
+  text=text.replace(/([\u05d0-\u05ea][\u05f3'][\u05d0-\u05ea]*)/g, function(m){
+    var withGeresh=m.replace(/'/g,'\u05f3');
+    var withAscii=m.replace(/\u05f3/g,"'");
+    return GERESH_WORDS[withGeresh]||GERESH_WORDS[withAscii]||m;
+  });
+
   // 1. Replace gershayim words
   text=text.replace(/([\u05d0-\u05ea]{1,8})["\u05f4]([\u05d0-\u05ea]{1,3})/g,
     function(match, pre, post){
@@ -1788,6 +1808,8 @@ function normalizeForSpeech(text){
   // 3. Single isolated Hebrew letter → letter name
   text=text.replace(/(?<![^\u05d0-\u05ea\s])(^|\s)([\u05d0-\u05ea])(\s|$)/g,
     function(m,pre,ch,post){ return pre+(LETTER_NAMES[ch]||ch)+post; });
+  // 4. Last step: remove any remaining geresh/gershayim that weren't handled above
+  text=text.replace(/[\u05f3\u05f4״\'\"]/g,'');
   return text.replace(/ {2,}/g,' ');
 }
 
